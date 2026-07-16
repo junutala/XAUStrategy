@@ -1,0 +1,231 @@
+//@version=5
+// =====================================================================
+//  XAU Scalping Strategy — Top-Down 1m / 5m / 10m
+//  For XAUUSD (spot gold). Designed to run on the 1-minute chart.
+//
+//  Framework (mirrors the "Intraday Scalping Cockpit" in the desk report):
+//    - 10m (or 15m) = BIAS filter : EMA20 vs EMA50 + VWAP + structure
+//    - 5m           = SETUP       : momentum not exhausted (RSI band)
+//    - 1m           = TRIGGER     : EMA9 x EMA21 cross in the bias direction
+//                                   with price on the correct side of VWAP
+//    Risk           : ATR-based stop & targets, breakeven trail, time-stop
+//    Filters        : trading session window + optional news blackout
+//
+//  This is a STRATEGY (backtestable). Use the Strategy Tester to validate,
+//  then create an alert on "Any alert() function call" to forward-test /
+//  webhook. Not financial advice — parameters are a starting point to test.
+// =====================================================================
+strategy("XAU Scalping — Top-Down 1/5/10m",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 100,
+     pyramiding           = 0,
+     commission_type      = strategy.commission.cash_per_order,
+     commission_value     = 0.0,
+     slippage             = 2,
+     calc_on_every_tick   = false,
+     process_orders_on_close = true,
+     max_labels_count     = 500)
+
+// ---------------------------------------------------------------------
+//  INPUTS
+// ---------------------------------------------------------------------
+grpTF   = "Timeframes"
+biasTF  = input.timeframe("10", "Bias timeframe (10m or 15m)", group = grpTF, tooltip = "Higher timeframe that sets directional bias. 10m as requested; 15m is the more common gold-scalping default.")
+setupTF = input.timeframe("5",  "Setup timeframe",             group = grpTF)
+// Trigger timeframe = the chart itself (run this on the 1-minute chart)
+
+grpEMA  = "EMAs"
+ema1Len = input.int(9,  "Trigger fast EMA (1m)", minval = 1, group = grpEMA)
+ema2Len = input.int(21, "Trigger slow EMA (1m)", minval = 1, group = grpEMA)
+biasFast= input.int(20, "Bias fast EMA",         minval = 1, group = grpEMA)
+biasSlow= input.int(50, "Bias slow EMA",         minval = 1, group = grpEMA)
+
+grpMOM  = "Momentum / Setup"
+rsiLen  = input.int(14,  "RSI length",              minval = 1,  group = grpMOM)
+rsiLongMin  = input.float(45, "Long: RSI must be >",  group = grpMOM, tooltip = "In an uptrend we buy pullbacks that have cooled but not broken. Entry allowed when RSI is above this and below the overbought guard.")
+rsiLongMax  = input.float(70, "Long: RSI must be <",  group = grpMOM)
+rsiShortMax = input.float(55, "Short: RSI must be <", group = grpMOM)
+rsiShortMin = input.float(30, "Short: RSI must be >", group = grpMOM)
+useVWAP     = input.bool(true, "Require price on correct side of VWAP", group = grpMOM)
+
+grpRISK = "Risk (ATR-based)"
+atrLen   = input.int(14,    "ATR length",              minval = 1,   group = grpRISK)
+atrStop  = input.float(1.1, "Stop = ATR x",            minval = 0.1, step = 0.1, group = grpRISK)
+rr1      = input.float(1.3, "Target 1 = R x",          minval = 0.1, step = 0.1, group = grpRISK)
+rr2      = input.float(2.5, "Target 2 = R x",          minval = 0.1, step = 0.1, group = grpRISK)
+t1Pct    = input.int(50,    "% closed at Target 1",    minval = 0, maxval = 100, group = grpRISK)
+useBE    = input.bool(true, "Move stop to breakeven at +1R", group = grpRISK)
+useTime  = input.bool(true, "Time-stop (exit after N bars)", group = grpRISK)
+timeBars = input.int(6,     "Time-stop bars",          minval = 1,   group = grpRISK)
+
+grpSESS = "Session & News filters"
+useSess  = input.bool(true, "Restrict to trading session", group = grpSESS)
+sess     = input.session("0700-1600", "Session (exchange time)", group = grpSESS, tooltip = "Concentrate on London open + London-NY overlap. Default 07:00-16:00. Set your chart timezone to London/UTC for gold.")
+useDayFlat = input.bool(true, "Flatten at session end", group = grpSESS)
+newsBlackout = input.bool(false, "Manual news blackout (no new entries)", group = grpSESS, tooltip = "Toggle on around CPI / FOMC / NFP to stop new entries.")
+maxTrades = input.int(6, "Max entries per day (0 = no cap)", minval = 0, group = grpSESS)
+
+grpVIS  = "Visuals"
+showEMAs = input.bool(true, "Show trigger EMAs & VWAP", group = grpVIS)
+showLvls = input.bool(true, "Show entry/stop/target lines", group = grpVIS)
+
+// ---------------------------------------------------------------------
+//  SERIES — chart (1m trigger)
+// ---------------------------------------------------------------------
+emaFast = ta.ema(close, ema1Len)
+emaSlow = ta.ema(close, ema2Len)
+rsi     = ta.rsi(close, rsiLen)
+atr     = ta.atr(atrLen)
+vwapVal = ta.vwap(hlc3)
+
+// ---------------------------------------------------------------------
+//  BIAS — 10m/15m higher timeframe (no repaint: confirmed HTF values)
+// ---------------------------------------------------------------------
+[bFast, bSlow, bClose, bVwap] = request.security(syminfo.tickerid, biasTF,
+     [ta.ema(close, biasFast), ta.ema(close, biasSlow), close, ta.vwap(hlc3)],
+     lookahead = barmerge.lookahead_off)
+
+biasLong  = bFast > bSlow and bClose > bVwap
+biasShort = bFast < bSlow and bClose < bVwap
+
+// ---------------------------------------------------------------------
+//  SETUP — 5m momentum not exhausted (confirmed HTF RSI)
+// ---------------------------------------------------------------------
+sRsi = request.security(syminfo.tickerid, setupTF, ta.rsi(close, rsiLen), lookahead = barmerge.lookahead_off)
+setupLong  = sRsi < 70          // uptrend, not already overbought on 5m
+setupShort = sRsi > 30          // downtrend, not already oversold on 5m
+
+// ---------------------------------------------------------------------
+//  TRIGGER — 1m EMA cross in bias direction
+// ---------------------------------------------------------------------
+crossUp   = ta.crossover(emaFast, emaSlow)
+crossDn   = ta.crossunder(emaFast, emaSlow)
+
+vwapOkLong  = not useVWAP or close > vwapVal
+vwapOkShort = not useVWAP or close < vwapVal
+
+rsiOkLong  = rsi > rsiLongMin  and rsi < rsiLongMax
+rsiOkShort = rsi < rsiShortMax and rsi > rsiShortMin
+
+// ---------------------------------------------------------------------
+//  FILTERS — session, news, trade cap
+// ---------------------------------------------------------------------
+inSession = not useSess or not na(time(timeframe.period, sess))
+newBar_day = ta.change(time("D")) != 0
+var int tradesToday = 0
+if newBar_day
+    tradesToday := 0
+capOk = maxTrades == 0 or tradesToday < maxTrades
+
+canEnter = inSession and not newsBlackout and capOk and strategy.position_size == 0
+
+longSignal  = canEnter and biasLong  and setupLong  and crossUp and vwapOkLong  and rsiOkLong
+shortSignal = canEnter and biasShort and setupShort and crossDn and vwapOkShort and rsiOkShort
+
+// ---------------------------------------------------------------------
+//  ENTRIES + EXITS
+// ---------------------------------------------------------------------
+var float entryPrice = na
+var float stopPrice  = na
+var float t1Price    = na
+var float t2Price    = na
+var int   barsInTrade = 0
+
+risk = atr * atrStop
+
+if longSignal
+    entryPrice := close
+    stopPrice  := close - risk
+    t1Price    := close + risk * rr1
+    t2Price    := close + risk * rr2
+    barsInTrade := 0
+    tradesToday += 1
+    strategy.entry("Long", strategy.long)
+
+if shortSignal
+    entryPrice := close
+    stopPrice  := close + risk
+    t1Price    := close - risk * rr1
+    t2Price    := close - risk * rr2
+    barsInTrade := 0
+    tradesToday += 1
+    strategy.entry("Short", strategy.short)
+
+inTrade = strategy.position_size != 0
+if inTrade
+    barsInTrade += 1
+
+// Breakeven: once +1R reached, pull stop to entry
+beLong  = useBE and strategy.position_size > 0 and high >= entryPrice + risk
+beShort = useBE and strategy.position_size < 0 and low  <= entryPrice - risk
+if beLong
+    stopPrice := math.max(stopPrice, entryPrice)
+if beShort
+    stopPrice := math.min(stopPrice, entryPrice)
+
+// Scale out at T1, remainder runs to T2, hard stop below/above
+if strategy.position_size > 0
+    strategy.exit("L-T1", from_entry = "Long", qty_percent = t1Pct, limit = t1Price, stop = stopPrice)
+    strategy.exit("L-T2", from_entry = "Long", limit = t2Price, stop = stopPrice)
+if strategy.position_size < 0
+    strategy.exit("S-T1", from_entry = "Short", qty_percent = t1Pct, limit = t1Price, stop = stopPrice)
+    strategy.exit("S-T2", from_entry = "Short", limit = t2Price, stop = stopPrice)
+
+// Time-stop
+if useTime and inTrade and barsInTrade >= timeBars
+    strategy.close_all("time-stop")
+
+// Flatten at session end
+sessEnd = useSess and useDayFlat and inSession[1] and not inSession
+if sessEnd
+    strategy.close_all("session-end")
+
+// ---------------------------------------------------------------------
+//  VISUALS
+// ---------------------------------------------------------------------
+plot(showEMAs ? emaFast : na, "EMA9",  color = color.new(#e5675a, 0), linewidth = 2)
+plot(showEMAs ? emaSlow : na, "EMA21", color = color.new(#5b8fd6, 0), linewidth = 2)
+plot(showEMAs ? vwapVal : na, "VWAP",  color = color.new(#9aa4b0, 0), linewidth = 1, style = plot.style_stepline)
+
+bgcolor(useSess and not inSession ? color.new(color.gray, 92) : na, title = "Out of session")
+
+plot(showLvls and inTrade ? entryPrice : na, "Entry",  color = color.new(color.gray, 0),  style = plot.style_linebr, linewidth = 1)
+plot(showLvls and inTrade ? stopPrice  : na, "Stop",   color = color.new(#cf4433, 0),      style = plot.style_linebr, linewidth = 1)
+plot(showLvls and inTrade ? t1Price    : na, "Target1",color = color.new(#1c8f5a, 0),      style = plot.style_linebr, linewidth = 1)
+plot(showLvls and inTrade ? t2Price    : na, "Target2",color = color.new(#1c8f5a, 40),     style = plot.style_linebr, linewidth = 1)
+
+plotshape(longSignal,  "Long trigger",  style = shape.triangleup,   location = location.belowbar, color = color.new(#1c8f5a, 0), size = size.small, text = "L")
+plotshape(shortSignal, "Short trigger", style = shape.triangledown, location = location.abovebar, color = color.new(#cf4433, 0), size = size.small, text = "S")
+
+// Bias state table (top-down at a glance)
+var table hud = table.new(position.top_right, 2, 4, border_width = 1)
+if barstate.islast
+    biasTxt = biasLong ? "LONG ↑" : biasShort ? "SHORT ↓" : "flat / chop"
+    biasCol = biasLong ? color.new(#1c8f5a, 0) : biasShort ? color.new(#cf4433, 0) : color.new(#c2922b, 0)
+    table.cell(hud, 0, 0, "Bias " + biasTF, text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 0, biasTxt, text_color = biasCol, text_size = size.small)
+    table.cell(hud, 0, 1, "Setup " + setupTF, text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 1, str.tostring(sRsi, "#.0") + " RSI", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 0, 2, "1m RSI", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 2, str.tostring(rsi, "#.0"), text_color = color.gray, text_size = size.small)
+    table.cell(hud, 0, 3, "Session", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 3, inSession ? "OPEN" : "closed", text_color = inSession ? color.new(#1c8f5a,0) : color.gray, text_size = size.small)
+
+// ---------------------------------------------------------------------
+//  ALERTS
+// ---------------------------------------------------------------------
+if longSignal
+    alert("🟢 XAU LONG scalp trigger @ " + str.tostring(close) +
+         "  stop " + str.tostring(stopPrice, "#.##") +
+         "  T1 "  + str.tostring(t1Price,  "#.##") +
+         "  T2 "  + str.tostring(t2Price,  "#.##"), alert.freq_once_per_bar_close)
+if shortSignal
+    alert("🔴 XAU SHORT scalp trigger @ " + str.tostring(close) +
+         "  stop " + str.tostring(stopPrice, "#.##") +
+         "  T1 "  + str.tostring(t1Price,  "#.##") +
+         "  T2 "  + str.tostring(t2Price,  "#.##"), alert.freq_once_per_bar_close)
+
+alertcondition(longSignal,  "XAU Long trigger",  "XAU long scalp trigger")
+alertcondition(shortSignal, "XAU Short trigger", "XAU short scalp trigger")
