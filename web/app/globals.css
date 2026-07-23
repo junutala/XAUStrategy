@@ -64,6 +64,7 @@ body{background:var(--paper);color:var(--text);font-family:var(--sans);
 .mast .sub{color:var(--ink-sub);font-size:12.5px;margin-top:3px;letter-spacing:.4px;text-transform:uppercase}
 .mast .right{text-align:right;font-size:12.5px;color:var(--ink-sub);display:flex;flex-direction:column;gap:8px;align-items:flex-end}
 .mast .right .dates{color:var(--ink-text)}
+.mast .right .autoref{color:var(--gold);font-size:11.5px;letter-spacing:.3px;font-variant-numeric:tabular-nums}
 .toggle{background:transparent;border:1px solid #3a4655;color:var(--ink-text);
   border-radius:20px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:var(--sans)}
 .toggle:hover{border-color:var(--gold)}

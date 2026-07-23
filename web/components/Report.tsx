@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import type { Report, Bias } from "@/lib/report";
 import {
   PriceChart,
@@ -35,6 +36,26 @@ function ThemeToggle() {
   );
 }
 
+const REFRESH_SECONDS = 60;
+
+function AutoRefresh() {
+  const router = useRouter();
+  const [secs, setSecs] = useState(REFRESH_SECONDS);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSecs((s) => {
+        if (s <= 1) {
+          router.refresh();
+          return REFRESH_SECONDS;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [router]);
+  return <div className="autoref">auto-refresh in {secs}s</div>;
+}
+
 export default function ReportView({ data }: { data: Report }) {
   const d = data;
   return (
@@ -50,6 +71,7 @@ export default function ReportView({ data }: { data: Report }) {
           <ThemeToggle />
           <div className="dates">{d.meta.dateRange}</div>
           <div>generated {d.meta.generated}</div>
+          <AutoRefresh />
         </div>
       </header>
 
@@ -161,15 +183,15 @@ export default function ReportView({ data }: { data: Report }) {
             </div>
             <ScalpChart price={d.scalp.intraday} vwap={d.scalp.vwap} ema9={d.scalp.ema9} ema21={d.scalp.ema21} />
             <div className="chart-title" style={{ marginTop: 10 }}>
-              Best hours to scalp gold <span className="m">· GMT</span>
+              Best hours to scalp gold <span className="m">· IST (India Standard Time)</span>
             </div>
             <div className="sessclock">
-              <div style={{ background: "#8a94a0", flex: "2 1 0" }}>Asia · thin</div>
-              <div style={{ background: "var(--bull)", flex: "1.4 1 0" }}>London 07–10 · active</div>
-              <div style={{ background: "var(--gold-2)", flex: "2 1 0" }}>London–NY 12–16 · PRIME</div>
-              <div style={{ background: "var(--neutral)", flex: "1.4 1 0" }}>Late NY · fading</div>
+              <div style={{ background: "#8a94a0", flex: "2 1 0" }}>Asia 05:30–12:30 · thin</div>
+              <div style={{ background: "var(--bull)", flex: "1.4 1 0" }}>London 12:30–15:30 · active</div>
+              <div style={{ background: "var(--gold-2)", flex: "2 1 0" }}>London–NY 17:30–21:30 · PRIME</div>
+              <div style={{ background: "var(--neutral)", flex: "1.4 1 0" }}>Late NY 21:30–02:30 · fading</div>
             </div>
-            <div className="cap">Concentrate scalps in the London open &amp; London–NY overlap; Asia chop &amp; rollover eat spread.</div>
+            <div className="cap">All times IST. Concentrate scalps in the London open (12:30 IST) &amp; London–NY overlap (17:30–21:30 IST); Asia chop &amp; rollover eat spread.</div>
           </div>
           <div>
             <div className="scalpcard">
