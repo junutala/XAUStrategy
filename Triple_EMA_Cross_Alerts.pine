@@ -2,27 +2,59 @@
 indicator("Triple EMA Cross Alerts", overlay=true, max_labels_count=500)
 
 // =====================================================================
-//  Triple EMA Cross Alerts
+//  Triple EMA Cross Alerts  (+ RSI / ADX false-signal filters)
 //  Alerts when EMA1 crosses EMA2 and when EMA1 crosses EMA3.
+//
+//  To cut whipsaw crosses in chop, two optional confirmation filters
+//  gate every signal (both on by default, both tunable/disableable):
+//    - RSI  : bullish crosses need RSI above a midline, bearish below.
+//             Blocks crosses that fire against momentum.
+//    - ADX  : only fire when a real trend is present (ADX > threshold).
+//             Suppresses crosses while price is flat / ranging.
+//
+//  What you see on the chart == what alerts, because markers and alerts
+//  are driven by the SAME filtered signal.
+//
 //  Use TradingView's Alert dialog (Create Alert) to enable:
-//    - "Play sound"     -> for the audible alert
-//    - "Show popup"     -> for the on-screen notification
-//    - Use TradingView Desktop App to get OS-level pop-ups that
-//      appear ON TOP of any other windows you have open.
+//    - "Play sound"  -> audible alert
+//    - "Show popup"  -> on-screen notification
+//    - TradingView Desktop App -> OS-level pop-ups on top of other windows
 // =====================================================================
 
-// ----------- INPUTS -----------
-ema1_len    = input.int(7,   title="EMA 1 Length", minval=1)
-ema2_len    = input.int(21,  title="EMA 2 Length", minval=1)
-ema3_len    = input.int(50,  title="EMA 3 Length", minval=1)
-src         = input.source(close, title="Source")
-show_marks  = input.bool(true,  title="Show cross markers on chart")
-use_close   = input.bool(true,  title="Trigger only on bar close (no repaint)")
+// ----------- INPUTS: EMAs -----------
+grpEMA      = "EMAs"
+ema1_len    = input.int(7,   title="EMA 1 Length", minval=1, group=grpEMA)
+ema2_len    = input.int(21,  title="EMA 2 Length", minval=1, group=grpEMA)
+ema3_len    = input.int(50,  title="EMA 3 Length", minval=1, group=grpEMA)
+src         = input.source(close, title="Source", group=grpEMA)
+show_marks  = input.bool(true,  title="Show cross markers on chart", group=grpEMA)
+use_close   = input.bool(true,  title="Trigger only on bar close (no repaint)", group=grpEMA)
+
+// ----------- INPUTS: Filters (reduce false signals) -----------
+grpF        = "Filters — reduce false signals"
+useRSI      = input.bool(true, title="RSI momentum filter", group=grpF, tooltip="Bullish crosses only when RSI is above the bull line; bearish only when below the bear line. Blocks crosses fired against momentum.")
+rsiLen      = input.int(14,   title="RSI length", minval=1, group=grpF)
+rsiBull     = input.float(50, title="Bull crosses need RSI >", group=grpF, tooltip="Raise toward 55-60 for stricter longs (fewer, higher-quality signals).")
+rsiBear     = input.float(50, title="Bear crosses need RSI <", group=grpF, tooltip="Lower toward 45-40 for stricter shorts.")
+useADX      = input.bool(true, title="ADX trend-strength filter", group=grpF, tooltip="Only fire when a trend is actually present. Best single filter for cutting range-bound whipsaw.")
+adxLen      = input.int(14,   title="ADX / DI length", minval=1, group=grpF)
+adxSmooth   = input.int(14,   title="ADX smoothing",   minval=1, group=grpF)
+adxMin      = input.float(20, title="Min ADX to allow a signal", minval=0, step=1, group=grpF, tooltip="ADX < 20 = weak/no trend (chop). Raise to 25 for only strong trends.")
+showTable   = input.bool(true, title="Show filter status table", group=grpF)
 
 // ----------- EMA CALCULATIONS -----------
 ema1 = ta.ema(src, ema1_len)
 ema2 = ta.ema(src, ema2_len)
 ema3 = ta.ema(src, ema3_len)
+
+// ----------- FILTER CALCULATIONS -----------
+rsi = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxSmooth)
+
+// Direction-aware filter gates
+rsiUpOk = not useRSI or rsi > rsiBull
+rsiDnOk = not useRSI or rsi < rsiBear
+adxOk   = not useADX or adx >= adxMin
 
 // ----------- PLOT EMAs -----------
 plot(ema1, title="EMA 1", color=color.new(#00E676, 0), linewidth=2)
@@ -36,62 +68,81 @@ cross13_up   = ta.crossover(ema1, ema3)    // EMA1 crosses ABOVE EMA3
 cross13_down = ta.crossunder(ema1, ema3)   // EMA1 crosses BELOW EMA3
 
 // Optional: fire only on bar-close to avoid intrabar repaint
-fire_12_up   = use_close ? (cross12_up   and barstate.isconfirmed) : cross12_up
-fire_12_down = use_close ? (cross12_down and barstate.isconfirmed) : cross12_down
-fire_13_up   = use_close ? (cross13_up   and barstate.isconfirmed) : cross13_up
-fire_13_down = use_close ? (cross13_down and barstate.isconfirmed) : cross13_down
+raw_12_up   = use_close ? (cross12_up   and barstate.isconfirmed) : cross12_up
+raw_12_down = use_close ? (cross12_down and barstate.isconfirmed) : cross12_down
+raw_13_up   = use_close ? (cross13_up   and barstate.isconfirmed) : cross13_up
+raw_13_down = use_close ? (cross13_down and barstate.isconfirmed) : cross13_down
 
-// ----------- ON-CHART MARKERS -----------
-plotshape(show_marks and cross12_up,   title="EMA1 x EMA2 Up",
+// Apply RSI + ADX filters -> final signals (chart markers AND alerts use these)
+fire_12_up   = raw_12_up   and rsiUpOk and adxOk
+fire_12_down = raw_12_down and rsiDnOk and adxOk
+fire_13_up   = raw_13_up   and rsiUpOk and adxOk
+fire_13_down = raw_13_down and rsiDnOk and adxOk
+
+// ----------- ON-CHART MARKERS (filtered) -----------
+plotshape(show_marks and fire_12_up,   title="EMA1 x EMA2 Up",
      style=shape.triangleup,   location=location.belowbar,
      color=color.new(color.green, 0), size=size.small,  text="1↑2")
-plotshape(show_marks and cross12_down, title="EMA1 x EMA2 Down",
+plotshape(show_marks and fire_12_down, title="EMA1 x EMA2 Down",
      style=shape.triangledown, location=location.abovebar,
      color=color.new(color.red,   0), size=size.small,  text="1↓2")
-plotshape(show_marks and cross13_up,   title="EMA1 x EMA3 Up",
+plotshape(show_marks and fire_13_up,   title="EMA1 x EMA3 Up",
      style=shape.triangleup,   location=location.belowbar,
      color=color.new(color.lime, 0),  size=size.normal, text="1↑3")
-plotshape(show_marks and cross13_down, title="EMA1 x EMA3 Down",
+plotshape(show_marks and fire_13_down, title="EMA1 x EMA3 Down",
      style=shape.triangledown, location=location.abovebar,
      color=color.new(color.maroon, 0), size=size.normal, text="1↓3")
 
-// Cross markers ON the EMA1 line itself
-plot(show_marks and (cross12_up or cross12_down) ? ema1 : na,
+// Cross markers ON the EMA1 line itself (filtered)
+plot(show_marks and (fire_12_up or fire_12_down) ? ema1 : na,
      title="Cross 1-2 marker", style=plot.style_cross, linewidth=4,
-     color=cross12_up ? color.green : color.red)
-plot(show_marks and (cross13_up or cross13_down) ? ema1 : na,
+     color=fire_12_up ? color.green : color.red)
+plot(show_marks and (fire_13_up or fire_13_down) ? ema1 : na,
      title="Cross 1-3 marker", style=plot.style_cross, linewidth=4,
-     color=cross13_up ? color.lime : color.maroon)
+     color=fire_13_up ? color.lime : color.maroon)
+
+// ----------- FILTER STATUS TABLE -----------
+var table hud = table.new(position.top_right, 2, 3, border_width=1)
+if showTable and barstate.islast
+    rsiCol = rsi > rsiBull ? color.new(#1c8f5a, 0) : rsi < rsiBear ? color.new(#cf4433, 0) : color.new(#c2922b, 0)
+    adxCol = adx >= adxMin ? color.new(#1c8f5a, 0) : color.new(color.gray, 0)
+    table.cell(hud, 0, 0, "RSI",  text_color=color.gray, text_size=size.small)
+    table.cell(hud, 1, 0, str.tostring(rsi, "#.0") + (useRSI ? "" : "  (off)"), text_color=rsiCol, text_size=size.small)
+    table.cell(hud, 0, 1, "ADX",  text_color=color.gray, text_size=size.small)
+    table.cell(hud, 1, 1, str.tostring(adx, "#.0") + (useADX ? (adx >= adxMin ? "  trend" : "  chop") : "  (off)"), text_color=adxCol, text_size=size.small)
+    table.cell(hud, 0, 2, "Bias", text_color=color.gray, text_size=size.small)
+    table.cell(hud, 1, 2, ema1 > ema3 ? "up" : "down", text_color=ema1 > ema3 ? color.new(#1c8f5a,0) : color.new(#cf4433,0), text_size=size.small)
 
 // ----------- ALERT CONDITIONS (for the "Create Alert" dialog) -----------
 // Each of these will appear in the "Condition" dropdown when you create an alert.
 alertcondition(fire_12_up,
-     title="EMA1 crosses ABOVE EMA2",
+     title="EMA1 crosses ABOVE EMA2 (filtered)",
      message="🔼 EMA1 crossed ABOVE EMA2 on {{ticker}} ({{interval}}) @ {{close}}")
 alertcondition(fire_12_down,
-     title="EMA1 crosses BELOW EMA2",
+     title="EMA1 crosses BELOW EMA2 (filtered)",
      message="🔽 EMA1 crossed BELOW EMA2 on {{ticker}} ({{interval}}) @ {{close}}")
 alertcondition(fire_13_up,
-     title="EMA1 crosses ABOVE EMA3",
+     title="EMA1 crosses ABOVE EMA3 (filtered)",
      message="🚀 EMA1 crossed ABOVE EMA3 on {{ticker}} ({{interval}}) @ {{close}}")
 alertcondition(fire_13_down,
-     title="EMA1 crosses BELOW EMA3",
+     title="EMA1 crosses BELOW EMA3 (filtered)",
      message="⚠️ EMA1 crossed BELOW EMA3 on {{ticker}} ({{interval}}) @ {{close}}")
 
 // Combined "Any cross" -> create ONE alert that fires on all four events
 any_cross = fire_12_up or fire_12_down or fire_13_up or fire_13_down
 alertcondition(any_cross,
-     title="Any EMA Cross",
+     title="Any EMA Cross (filtered)",
      message="EMA cross detected on {{ticker}} ({{interval}}) @ {{close}}")
 
 // ----------- DYNAMIC alert() CALLS -----------
 // These let a single alert created with the "Any alert() function call"
-// condition fire with a specific message per event.
+// condition fire with a specific message per event (incl. RSI/ADX context).
+ctx() => "  RSI " + str.tostring(rsi, "#.0") + " ADX " + str.tostring(adx, "#.0")
 if fire_12_up
-    alert("🔼 EMA1 ↑ EMA2 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    alert("🔼 EMA1 ↑ EMA2 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close) + ctx(), alert.freq_once_per_bar_close)
 if fire_12_down
-    alert("🔽 EMA1 ↓ EMA2 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    alert("🔽 EMA1 ↓ EMA2 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close) + ctx(), alert.freq_once_per_bar_close)
 if fire_13_up
-    alert("🚀 EMA1 ↑ EMA3 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    alert("🚀 EMA1 ↑ EMA3 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close) + ctx(), alert.freq_once_per_bar_close)
 if fire_13_down
-    alert("⚠️ EMA1 ↓ EMA3 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    alert("⚠️ EMA1 ↓ EMA3 on " + syminfo.ticker + " (" + timeframe.period + ") @ " + str.tostring(close) + ctx(), alert.freq_once_per_bar_close)
