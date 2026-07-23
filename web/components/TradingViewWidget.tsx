@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 // API; their real-time feed is licensed and can't be redistributed). The bias /
 // VWAP / scalp numbers still come from Yahoo Finance in lib/report.ts.
 export default function TradingViewWidget({
-  symbol = "OANDA:XAUUSD",
+  symbol = "TICKMILL:XAUUSD",
   interval = "5",
 }: {
   symbol?: string;

@@ -180,9 +180,9 @@ export default function ReportView({ data }: { data: Report }) {
         <div className="scalpwrap">
           <div>
             <div className="chart-title">
-              XAUUSD live <span className="m">· TradingView · OANDA:XAUUSD · real-time (IST)</span>
+              XAUUSD live <span className="m">· TradingView · TICKMILL:XAUUSD · real-time (IST)</span>
             </div>
-            <TradingViewWidget symbol="OANDA:XAUUSD" interval={d.scalp.triggerTF.replace(/[^0-9]/g, "") || "5"} />
+            <TradingViewWidget symbol="TICKMILL:XAUUSD" interval={d.scalp.triggerTF.replace(/[^0-9]/g, "") || "5"} />
             <div className="cap">Live TradingView chart (display only). Desk numbers below are computed from Yahoo Finance.</div>
             <div className="chart-title" style={{ marginTop: 12 }}>
               XAUUSD {d.scalp.triggerTF} <span className="m">· VWAP + EMA9 / EMA21 · session shaded</span>
