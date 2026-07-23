@@ -13,6 +13,7 @@ import {
   SeasonalityChart,
   ScalpChart,
 } from "./charts";
+import TradingViewWidget from "./TradingViewWidget";
 
 const n0 = (v: number) => Math.round(v).toLocaleString();
 const n1 = (v: number) => v.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -179,6 +180,11 @@ export default function ReportView({ data }: { data: Report }) {
         <div className="scalpwrap">
           <div>
             <div className="chart-title">
+              XAUUSD live <span className="m">· TradingView · OANDA:XAUUSD · real-time (IST)</span>
+            </div>
+            <TradingViewWidget symbol="OANDA:XAUUSD" interval={d.scalp.triggerTF.replace(/[^0-9]/g, "") || "5"} />
+            <div className="cap">Live TradingView chart (display only). Desk numbers below are computed from Yahoo Finance.</div>
+            <div className="chart-title" style={{ marginTop: 12 }}>
               XAUUSD {d.scalp.triggerTF} <span className="m">· VWAP + EMA9 / EMA21 · session shaded</span>
             </div>
             <ScalpChart price={d.scalp.intraday} vwap={d.scalp.vwap} ema9={d.scalp.ema9} ema21={d.scalp.ema21} />
