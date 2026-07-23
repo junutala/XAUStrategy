@@ -20,7 +20,7 @@ export async function yahooBars(
   symbol: string,
   range = "6mo",
   interval = "1d",
-  revalidate = 900,
+  revalidate = 60,
 ): Promise<Bars> {
   const url =
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
