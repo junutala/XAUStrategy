@@ -1,0 +1,1201 @@
+//@version=6
+indicator("ARUN Indicator Pro v6 - Confidence Engine", shorttitle="ARUNPRO6", overlay=true, max_labels_count=500)
+
+//=====================================================
+// WORKS ON WHATEVER PAIR THE CHART IS ON
+//
+// Structure was always symbol-agnostic (EMAs, crosses
+// and the MTF requests all read syminfo.tickerid), but
+// the two thresholds were not:
+//
+//   - the angle took a RAW price slope, so it pinned to
+//     ~180 on gold and sat at 90.0 (flat) on EURUSD
+//   - the confidence target was a fixed point value
+//
+// Both are now measured in ATR, so 45 degrees means
+// "one ATR per bar down" and the target means "half an
+// ATR" on gold, EURUSD, BTC or an index alike.
+//=====================================================
+
+//=====================================================
+// INPUTS
+//=====================================================
+
+fastLen = input.int(7, "Fast EMA", minval=1)
+midLen = input.int(21, "Mid EMA", minval=1)
+slowLen = input.int(50, "Slow EMA", minval=1)
+
+angleLookback = input.int(5, "Angle Lookback (Bars)", minval=1, maxval=50)
+
+atrLen = input.int(
+     14,
+     "ATR Length (scales angles & target)",
+     minval=1,
+     tooltip = "Everything measured in price units is normalised by this ATR, " +
+               "so the same settings behave the same way on any instrument.")
+
+confidenceLookback = input.int(15, "Confidence - Last N Setups", minval=5, maxval=50)
+
+targetMode = input.string(
+     "ATR Multiple",
+     "Confidence Target Mode",
+     options = ["ATR Multiple", "Fixed Points"],
+     tooltip = "ATR Multiple travels across symbols. Fixed Points is the old " +
+               "behaviour - only meaningful on the instrument you tuned it for.")
+
+targetAtrMult = input.float(0.5, "Target = ATR x", minval=0.05, step=0.05)
+
+targetPoints = input.float(2.0, "Target (Fixed Points)", minval=0.0, step=0.1)
+
+// Maximum number of bars over which potential is measured
+potentialWindowBars = input.int(10, "Potential Evaluation Window (Bars)", minval=1, maxval=50)
+
+// Confidence statistics start from this date
+analysisStartDate = input.time(
+     timestamp("21 Aug 2026 00:00 +0530"),
+     "Confidence Analysis Start Date")
+
+showSignals = input.bool(true, "Show BUY/SELL Signals")
+showEntryPrice = input.bool(false, "Show Entry Price")
+
+//=====================================================
+// SIGNAL RULES
+//
+// 1. Fast EMA must cross Mid EMA
+// 2. The candle must sit on the same side of the Slow EMA
+//    as the direction of that cross
+// 3. Then the BUY / SELL signal is printed
+//=====================================================
+
+candleSideMode = input.string(
+     "Full Candle",
+     "Candle Side vs Slow EMA",
+     options = ["Full Candle", "Body", "Close"],
+     tooltip = "Full Candle = high & low both on one side of the Slow EMA. " +
+               "Body = open & close both on one side. " +
+               "Close = only the close is checked.")
+
+useMtfFilter = input.bool(
+     false,
+     "Extra Filter: MTF Alignment")
+
+useAngleFilter = input.bool(
+     false,
+     "Extra Filter: Angle Alignment")
+
+// Timeframes are inputs so the MTF row still makes sense
+// if you run this on something other than a 1m chart.
+mtfTF1 = input.timeframe("3", "MTF Timeframe 1")
+mtfTF2 = input.timeframe("5", "MTF Timeframe 2")
+mtfTF3 = input.timeframe("10", "MTF Timeframe 3")
+
+//=====================================================
+// EMA COLORS
+//=====================================================
+
+fastColor = input.color(color.lime, "Fast EMA Color")
+midColor = input.color(color.red, "Mid EMA Color")
+slowColor = input.color(color.blue, "Slow EMA Color")
+
+//=====================================================
+// EMAs
+//=====================================================
+
+emaF = ta.ema(close, fastLen)
+emaM = ta.ema(close, midLen)
+emaS = ta.ema(close, slowLen)
+
+plot(emaF, color=fastColor, linewidth=2, title="Fast EMA")
+plot(emaM, color=midColor, linewidth=2, title="Mid EMA")
+plot(emaS, color=slowColor, linewidth=2, title="Slow EMA")
+
+//=====================================================
+// ATR REFERENCE
+// One bar's typical range, in the chart symbol's own
+// price units. Used to make every threshold portable.
+//=====================================================
+
+atrRef = ta.atr(atrLen)
+
+atrSafe = na(atrRef) or atrRef <= 0 ? syminfo.mintick : atrRef
+
+//=====================================================
+// CURRENT TREND
+//=====================================================
+
+bullTrend = emaM > emaS
+bearTrend = emaM < emaS
+
+bgcolor(
+     bullTrend ? color.new(color.green, 93) :
+     bearTrend ? color.new(color.red, 93) :
+     na)
+
+//=====================================================
+// CROSS DETECTION
+//=====================================================
+
+fastMidBull = ta.crossover(emaF, emaM)
+fastMidBear = ta.crossunder(emaF, emaM)
+
+midSlowBull = ta.crossover(emaM, emaS)
+midSlowBear = ta.crossunder(emaM, emaS)
+
+//=====================================================
+// MTF TREND
+//=====================================================
+
+trendTF(tf) =>
+    request.security(
+         syminfo.tickerid,
+         tf,
+         ta.ema(close, midLen) > ta.ema(close, slowLen) ? 1 : -1)
+
+trend1 = trendTF(mtfTF1)
+trend2 = trendTF(mtfTF2)
+trend3 = trendTF(mtfTF3)
+
+mtfBull =
+     trend1 == 1 and
+     trend2 == 1 and
+     trend3 == 1
+
+mtfBear =
+     trend1 == -1 and
+     trend2 == -1 and
+     trend3 == -1
+
+//=====================================================
+// ANGLE CALCULATION
+// 90 degrees = FLAT
+// Above 90 = BULLISH
+// Below 90 = BEARISH
+//
+// The slope is divided by ATR before the atan, so the
+// scale reads the same on every symbol:
+//   135 degrees = +1 ATR per bar
+//    90 degrees = flat
+//    45 degrees = -1 ATR per bar
+//=====================================================
+
+angleFromEMA(emaValue) =>
+    slope = (emaValue - emaValue[angleLookback]) / angleLookback
+    normalised = slope / atrSafe
+    90.0 + math.atan(normalised) * 180.0 / math.pi
+
+fastAngle = angleFromEMA(emaF)
+midAngle = angleFromEMA(emaM)
+slowAngle = angleFromEMA(emaS)
+
+//=====================================================
+// ANGLE CONFLUENCE
+//=====================================================
+
+anglesBull =
+     not na(fastAngle) and
+     not na(midAngle) and
+     not na(slowAngle) and
+     fastAngle > 90 and
+     midAngle > 90 and
+     slowAngle > 90
+
+anglesBear =
+     not na(fastAngle) and
+     not na(midAngle) and
+     not na(slowAngle) and
+     fastAngle < 90 and
+     midAngle < 90 and
+     slowAngle < 90
+
+//=====================================================
+// CANDLE SIDE VS SLOW EMA
+//
+// The candle must be completely on one side of the
+// Slow EMA, according to the selected mode.
+//=====================================================
+
+candleAboveSlow =
+     candleSideMode == "Full Candle" ? low > emaS :
+     candleSideMode == "Body" ? math.min(open, close) > emaS :
+     close > emaS
+
+candleBelowSlow =
+     candleSideMode == "Full Candle" ? high < emaS :
+     candleSideMode == "Body" ? math.max(open, close) < emaS :
+     close < emaS
+
+//=====================================================
+// ENTRY CONDITIONS
+//
+// 1. Fast crosses Mid
+// 2. Candle on the same side of the Slow EMA
+// 3. Signal
+//
+// The MTF and Angle filters are optional extras and
+// are OFF by default.
+//=====================================================
+
+buySetup =
+     fastMidBull and
+     candleAboveSlow and
+     (not useMtfFilter or mtfBull) and
+     (not useAngleFilter or anglesBull) and
+     barstate.isconfirmed
+
+sellSetup =
+     fastMidBear and
+     candleBelowSlow and
+     (not useMtfFilter or mtfBear) and
+     (not useAngleFilter or anglesBear) and
+     barstate.isconfirmed
+
+//=====================================================
+// TARGET FOR A SETUP TAKEN RIGHT NOW
+//
+// Stored per setup, so old statistics keep the target
+// that applied when that setup was taken instead of
+// being re-scored against today's volatility.
+//=====================================================
+
+targetNow =
+     targetMode == "ATR Multiple" ? targetAtrMult * atrSafe : targetPoints
+
+//=====================================================
+// HISTORICAL TRADE ARRAYS
+// MFE and the target it was measured against, kept in
+// step - shift both or the pairing breaks.
+//=====================================================
+
+var array<float> buyMFE = array.new_float()
+var array<float> buyTGT = array.new_float()
+
+var array<float> sellMFE = array.new_float()
+var array<float> sellTGT = array.new_float()
+
+//=====================================================
+// ACTIVE TRADE STATE
+//=====================================================
+
+var bool activeTrade = false
+var int activeDirection = 0
+var float activeEntry = na
+var float activeMFE = 0.0
+var float activeTarget = na
+var int activeBars = 0
+
+//=====================================================
+// SIGNAL VARIABLES
+//=====================================================
+
+bool newBuySignal = false
+bool newSellSignal = false
+
+//=====================================================
+// UPDATE / CLOSE THE ACTIVE TRADE  ** RUNS FIRST **
+//
+// This block must come before the entry block. When a
+// reversal closes a trade, the very bar that reversed
+// it is usually the bar carrying the opposite setup -
+// closing first lets that signal print on the same bar
+// instead of being swallowed.
+//
+// Potential is measured until:
+// 1. Reversal occurs
+// OR
+// 2. Potential window expires
+//
+// Whichever happens first. The counter starts on the
+// bar AFTER entry, because entry is at this bar's close.
+//=====================================================
+
+if activeTrade
+
+    activeBars += 1
+
+    //=================================================
+    // BUY
+    //=================================================
+
+    if activeDirection == 1
+
+        activeMFE := math.max(
+             activeMFE,
+             high - activeEntry)
+
+        buyReversal =
+             fastMidBear or
+             midSlowBear
+
+        finishBuy =
+             buyReversal or
+             activeBars >= potentialWindowBars
+
+        if finishBuy
+
+            finalMFE = math.max(0.0, activeMFE)
+
+            array.push(buyMFE, finalMFE)
+            array.push(buyTGT, activeTarget)
+
+            if array.size(buyMFE) > confidenceLookback
+                array.shift(buyMFE)
+                array.shift(buyTGT)
+
+            activeTrade := false
+            activeDirection := 0
+            activeEntry := na
+            activeMFE := 0.0
+            activeTarget := na
+            activeBars := 0
+
+    //=================================================
+    // SELL
+    //=================================================
+
+    else if activeDirection == -1
+
+        activeMFE := math.max(
+             activeMFE,
+             activeEntry - low)
+
+        sellReversal =
+             fastMidBull or
+             midSlowBull
+
+        finishSell =
+             sellReversal or
+             activeBars >= potentialWindowBars
+
+        if finishSell
+
+            finalMFE = math.max(0.0, activeMFE)
+
+            array.push(sellMFE, finalMFE)
+            array.push(sellTGT, activeTarget)
+
+            if array.size(sellMFE) > confidenceLookback
+                array.shift(sellMFE)
+                array.shift(sellTGT)
+
+            activeTrade := false
+            activeDirection := 0
+            activeEntry := na
+            activeMFE := 0.0
+            activeTarget := na
+            activeBars := 0
+
+//=====================================================
+// START NEW TRADE
+// Only setups after Analysis Start Date
+//
+// Potential starts at zero: entry is this bar's CLOSE,
+// so the bar's own high / low happened before entry and
+// must not be counted as captured movement.
+//=====================================================
+
+if not activeTrade and time >= analysisStartDate
+
+    if buySetup
+
+        activeTrade := true
+        activeDirection := 1
+        activeEntry := close
+        activeMFE := 0.0
+        activeTarget := targetNow
+        activeBars := 0
+
+        newBuySignal := true
+
+    else if sellSetup
+
+        activeTrade := true
+        activeDirection := -1
+        activeEntry := close
+        activeMFE := 0.0
+        activeTarget := targetNow
+        activeBars := 0
+
+        newSellSignal := true
+
+//=====================================================
+// STATISTICS FUNCTIONS
+//
+// Each setup is scored against the target that applied
+// when it was taken, not against the current one.
+//=====================================================
+
+calculateWins(mfeArr, tgtArr) =>
+    int wins = 0
+
+    if array.size(mfeArr) > 0
+        for i = 0 to array.size(mfeArr) - 1
+            if array.get(mfeArr, i) >= array.get(tgtArr, i)
+                wins += 1
+
+    wins
+
+calculateAverage(arr) =>
+    float total = 0.0
+
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            total += array.get(arr, i)
+
+    array.size(arr) > 0 ? total / array.size(arr) : na
+
+calculateMaximum(arr) =>
+    float maximum = na
+
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            value = array.get(arr, i)
+
+            if na(maximum) or value > maximum
+                maximum := value
+
+    maximum
+
+calculateMedian(arr) =>
+    float medianValue = na
+
+    int size = array.size(arr)
+
+    if size > 0
+
+        temp = array.copy(arr)
+
+        array.sort(temp, order.ascending)
+
+        int half = math.floor(size / 2)
+
+        if size % 2 == 1
+            medianValue := array.get(temp, half)
+        else
+            lower = array.get(temp, half - 1)
+            upper = array.get(temp, half)
+            medianValue := (lower + upper) / 2.0
+
+    medianValue
+
+//=====================================================
+// BUY STATISTICS
+//=====================================================
+
+buyCount = array.size(buyMFE)
+
+buyWins = calculateWins(buyMFE, buyTGT)
+
+buyAverage = calculateAverage(buyMFE)
+
+buyMaximum = calculateMaximum(buyMFE)
+
+buyMedian = calculateMedian(buyMFE)
+
+//=====================================================
+// SELL STATISTICS
+//=====================================================
+
+sellCount = array.size(sellMFE)
+
+sellWins = calculateWins(sellMFE, sellTGT)
+
+sellAverage = calculateAverage(sellMFE)
+
+sellMaximum = calculateMaximum(sellMFE)
+
+sellMedian = calculateMedian(sellMFE)
+
+//=====================================================
+// CURRENT DIRECTION
+//=====================================================
+
+currentDirection =
+     bullTrend ? "BULL" :
+     bearTrend ? "BEAR" :
+     "NEUTRAL"
+
+//=====================================================
+// CURRENT SETUP STATUS
+//=====================================================
+
+currentSetup =
+     newBuySignal ? "BUY" :
+     newSellSignal ? "SELL" :
+     activeTrade and activeDirection == 1 ? "BUY ACTIVE" :
+     activeTrade and activeDirection == -1 ? "SELL ACTIVE" :
+     "WAIT"
+
+//=====================================================
+// CURRENT POTENTIAL
+//=====================================================
+
+currentPotential =
+     activeTrade ? activeMFE : na
+
+//=====================================================
+// DASHBOARD HELPERS
+//=====================================================
+
+trendText(v) =>
+    v == 1 ? "Bull" : "Bear"
+
+trendColor(v) =>
+    v == 1 ? color.green : color.red
+
+angleText(angle) =>
+    na(angle) ? "N/A" : str.tostring(angle, "#.0") + "°"
+
+angleColor(angle) =>
+    na(angle) ? color.gray :
+     angle > 90 ? color.green :
+     angle < 90 ? color.red :
+     color.orange
+
+angleDirection(angle) =>
+    na(angle) ? "" :
+     angle > 90 ? "↑" :
+     angle < 90 ? "↓" :
+     "→"
+
+confidenceColor(wins, count) =>
+    count == 0 ? color.gray :
+     wins >= count * 0.80 ? color.green :
+     wins >= count * 0.60 ? color.orange :
+     color.red
+
+confidenceText(wins, count) =>
+    count == 0 ? "N/A" :
+     str.tostring(wins) + "/" + str.tostring(count)
+
+// Price-unit values print at the symbol's own tick
+// precision - 3350.4 on gold, 1.08423 on EURUSD - and
+// carry their size in ATR so the number means something
+// without knowing the instrument.
+pointsText(value) =>
+    na(value) ? "N/A" :
+     str.tostring(value, format.mintick) +
+     "  (" + str.tostring(value / atrSafe, "#.00") + "x ATR)"
+
+//=====================================================
+// DASHBOARD
+//=====================================================
+
+var table dash = table.new(
+     position.top_right,
+     2,
+     26,
+     border_width=1)
+
+if barstate.islast
+
+    int r = 0
+
+    //=================================================
+    // HEADER
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "ARUN PRO v6",
+         bgcolor=color.gray,
+         text_color=color.white)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         mtfTF1 + " / " + mtfTF2 + " / " + mtfTF3,
+         bgcolor=color.gray,
+         text_color=color.white)
+
+    r += 1
+
+    //=================================================
+    // INSTRUMENT
+    // Whatever chart this is applied to.
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Instrument",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         syminfo.ticker + " · " + timeframe.period,
+         bgcolor=color.new(color.gray, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // CURRENT TREND
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Current Trend",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         currentDirection,
+         bgcolor=bullTrend ?
+              color.new(color.green, 80) :
+              color.new(color.red, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // CURRENT SETUP
+    //=================================================
+
+    setupColor =
+         str.contains(currentSetup, "BUY") ? color.green :
+         str.contains(currentSetup, "SELL") ? color.red :
+         color.orange
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Current Setup",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         currentSetup,
+         bgcolor=color.new(setupColor, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // MTF TIMEFRAME 1
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "TF " + mtfTF1,
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         trendText(trend1),
+         bgcolor=color.new(trendColor(trend1), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // MTF TIMEFRAME 2
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "TF " + mtfTF2,
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         trendText(trend2),
+         bgcolor=color.new(trendColor(trend2), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // MTF TIMEFRAME 3
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "TF " + mtfTF3,
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         trendText(trend3),
+         bgcolor=color.new(trendColor(trend3), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // MTF ALIGNMENT
+    //=================================================
+
+    mtfText =
+         mtfBull ? "ALL BULL" :
+         mtfBear ? "ALL BEAR" :
+         "MIXED"
+
+    mtfColor =
+         mtfBull ? color.green :
+         mtfBear ? color.red :
+         color.orange
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "MTF Alignment",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         mtfText,
+         bgcolor=color.new(mtfColor, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // FAST ANGLE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Fast Angle",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         angleText(fastAngle) +
+         " " +
+         angleDirection(fastAngle),
+         bgcolor=color.new(angleColor(fastAngle), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // MID ANGLE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Mid Angle",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         angleText(midAngle) +
+         " " +
+         angleDirection(midAngle),
+         bgcolor=color.new(angleColor(midAngle), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // SLOW ANGLE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Slow Angle",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         angleText(slowAngle) +
+         " " +
+         angleDirection(slowAngle),
+         bgcolor=color.new(angleColor(slowAngle), 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // ANGLE ALIGNMENT
+    //=================================================
+
+    angleAlignment =
+         anglesBull ? "ALL BULL ↑" :
+         anglesBear ? "ALL BEAR ↓" :
+         "MIXED"
+
+    angleAlignmentColor =
+         anglesBull ? color.green :
+         anglesBear ? color.red :
+         color.orange
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Angle Alignment",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         angleAlignment,
+         bgcolor=color.new(angleAlignmentColor, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // BUY CONFIDENCE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "BUY Confidence",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         confidenceText(buyWins, buyCount),
+         bgcolor=color.new(
+              confidenceColor(buyWins, buyCount),
+              80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // BUY MAX POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "BUY Max Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(buyMaximum),
+         bgcolor=color.new(color.green, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // BUY AVERAGE POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "BUY Avg Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(buyAverage),
+         bgcolor=color.new(color.green, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // BUY MEDIAN POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "BUY Median Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(buyMedian),
+         bgcolor=color.new(color.green, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // SELL CONFIDENCE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "SELL Confidence",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         confidenceText(sellWins, sellCount),
+         bgcolor=color.new(
+              confidenceColor(sellWins, sellCount),
+              80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // SELL MAX POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "SELL Max Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(sellMaximum),
+         bgcolor=color.new(color.red, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // SELL AVERAGE POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "SELL Avg Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(sellAverage),
+         bgcolor=color.new(color.red, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // SELL MEDIAN POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "SELL Median Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(sellMedian),
+         bgcolor=color.new(color.red, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // TARGET REFERENCE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Target Reference",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(targetNow),
+         bgcolor=color.new(color.orange, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // ATR REFERENCE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "ATR (" + str.tostring(atrLen) + ")",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         str.tostring(atrSafe, format.mintick),
+         bgcolor=color.new(color.orange, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // POTENTIAL WINDOW
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Potential Window",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         str.tostring(potentialWindowBars) + " bars",
+         bgcolor=color.new(color.blue, 85),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // CURRENT POTENTIAL
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Current Potential",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(currentPotential),
+         bgcolor=color.new(color.blue, 80),
+         text_color=color.black)
+
+//=====================================================
+// BUY / SELL SIGNALS
+//=====================================================
+
+plotshape(
+     showSignals and newBuySignal,
+     title="BUY",
+     style=shape.labelup,
+     text="BUY",
+     location=location.belowbar,
+     color=color.green,
+     textcolor=color.white,
+     size=size.small)
+
+plotshape(
+     showSignals and newSellSignal,
+     title="SELL",
+     style=shape.labeldown,
+     text="SELL",
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     size=size.small)
+
+//=====================================================
+// OPTIONAL ENTRY PRICE
+//=====================================================
+
+if showEntryPrice and newBuySignal
+    label.new(
+         bar_index,
+         low,
+         "BUY\n" + str.tostring(close, format.mintick),
+         style=label.style_label_up,
+         color=color.green,
+         textcolor=color.white)
+
+if showEntryPrice and newSellSignal
+    label.new(
+         bar_index,
+         high,
+         "SELL\n" + str.tostring(close, format.mintick),
+         style=label.style_label_down,
+         color=color.red,
+         textcolor=color.white)
+
+//=====================================================
+// ALERT CONDITIONS
+//=====================================================
+
+alertcondition(
+     newBuySignal,
+     title="ARUN PRO BUY",
+     message="ARUN PRO BUY on {{ticker}} @ {{close}} - Fast crossed Mid, candle above Slow")
+
+alertcondition(
+     newSellSignal,
+     title="ARUN PRO SELL",
+     message="ARUN PRO SELL on {{ticker}} @ {{close}} - Fast crossed Mid, candle below Slow")
+
+//=====================================================
+// BAR COLORING
+//=====================================================
+
+barcolor(
+     newBuySignal ? color.lime :
+     newSellSignal ? color.red :
+     na)
