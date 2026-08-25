@@ -16,7 +16,7 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   alerts) implementing the same top-down logic: 10m/15m bias filter, EMA9×EMA21
   trigger, VWAP + RSI, ATR stops/targets, session & news filters. Symbol-agnostic —
   it trades whatever chart you apply it to.
-- **`ARUN_Indicator_Pro.pine`** — the ARUN Pro v6 confidence-engine indicator: EMA
+- **`ARUN_Indicator_Pro.pine`** — the ARUN Pro v7 confidence-engine indicator: EMA
   cross + slow-EMA side entries, MTF and ATR-normalised angle filters, and a dashboard
   covering the price range over the Slow EMA's own window (high / low / mid, where price
   sits inside it, and the room left to each wall in ATR) plus a confidence score over the

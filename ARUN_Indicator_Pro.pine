@@ -1,5 +1,5 @@
 //@version=6
-indicator("ARUN Indicator Pro v6 - Confidence Engine", shorttitle="ARUNPRO6", overlay=true, max_labels_count=500)
+indicator("ARUN Indicator Pro v7 - Confidence Engine", shorttitle="ARUNPRO7", overlay=true, max_labels_count=500)
 
 //=====================================================
 // WORKS ON WHATEVER PAIR THE CHART IS ON
@@ -707,7 +707,7 @@ if barstate.islast
          dash,
          0,
          r,
-         "ARUN PRO v6",
+         "ARUN PRO v7",
          bgcolor=color.gray,
          text_color=color.white)
 
