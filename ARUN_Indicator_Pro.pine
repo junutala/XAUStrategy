@@ -34,7 +34,42 @@ atrLen = input.int(
      tooltip = "Everything measured in price units is normalised by this ATR, " +
                "so the same settings behave the same way on any instrument.")
 
-confidenceLookback = input.int(15, "Confidence - Last N Setups", minval=5, maxval=50)
+//---- 50-candle range ----
+// Where price sits inside its recent range, and how much
+// room is left to each wall. This is the entry / exit
+// context: the same EMA cross is a different trade at the
+// bottom of the range than at the top.
+
+rangeLen = input.int(
+     50,
+     "Range Lookback (Candles)",
+     minval=5,
+     maxval=500,
+     group = "Price Range")
+
+showRangeLines = input.bool(
+     true,
+     "Plot Range High / Low / Mid",
+     group = "Price Range")
+
+//---- confidence engine ----
+
+confidenceLookback = input.int(
+     15,
+     "Confidence - Last N Setups",
+     minval=5,
+     maxval=50,
+     group = "Confidence")
+
+showPotentialStats = input.bool(
+     false,
+     "Show Max / Avg / Median Potential rows",
+     group = "Confidence",
+     tooltip = "How far price travelled in favour of the last N setups before " +
+               "they died: Max = best case, Avg = mean, Median = typical " +
+               "(unlike Avg, one lucky runner does not drag it). Useful for " +
+               "sizing a target, not for deciding an entry - off by default. " +
+               "The Confidence rows keep working either way.")
 
 targetMode = input.string(
      "ATR Multiple",
@@ -118,6 +153,63 @@ plot(emaS, color=slowColor, linewidth=2, title="Slow EMA")
 atrRef = ta.atr(atrLen)
 
 atrSafe = na(atrRef) or atrRef <= 0 ? syminfo.mintick : atrRef
+
+//=====================================================
+// 50-CANDLE PRICE RANGE
+//
+// rangeAvg is the mean of the last N closes - note that
+// it sits almost on top of the Slow EMA already plotted,
+// so rangeMid is usually the more informative anchor.
+//=====================================================
+
+rangeHigh = ta.highest(high, rangeLen)
+rangeLow = ta.lowest(low, rangeLen)
+rangeMid = (rangeHigh + rangeLow) / 2
+rangeAvg = ta.sma(close, rangeLen)
+
+rangeSpan = rangeHigh - rangeLow
+
+// 0% = sitting on the range low, 100% = on the range high
+positionInRange =
+     rangeSpan > 0 ? (close - rangeLow) / rangeSpan * 100.0 : na
+
+roomToHigh = rangeHigh - close
+roomToLow = close - rangeLow
+
+rangeZone =
+     na(positionInRange) ? "N/A" :
+     positionInRange >= 80 ? "UPPER - stretched" :
+     positionInRange <= 20 ? "LOWER - stretched" :
+     "MID"
+
+// Neutral colouring: the extremes are where a with-trend
+// entry has least room and a fade has most.
+rangeZoneColor =
+     na(positionInRange) ? color.gray :
+     positionInRange >= 80 ? color.red :
+     positionInRange <= 20 ? color.green :
+     color.orange
+
+plot(
+     showRangeLines ? rangeHigh : na,
+     "Range High",
+     color=color.new(color.red, 30),
+     style=plot.style_linebr,
+     linewidth=1)
+
+plot(
+     showRangeLines ? rangeLow : na,
+     "Range Low",
+     color=color.new(color.green, 30),
+     style=plot.style_linebr,
+     linewidth=1)
+
+plot(
+     showRangeLines ? rangeMid : na,
+     "Range Mid",
+     color=color.new(color.gray, 50),
+     style=plot.style_linebr,
+     linewidth=1)
 
 //=====================================================
 // CURRENT TREND
@@ -567,10 +659,13 @@ confidenceText(wins, count) =>
     count == 0 ? "N/A" :
      str.tostring(wins) + "/" + str.tostring(count)
 
-// Price-unit values print at the symbol's own tick
-// precision - 3350.4 on gold, 1.08423 on EURUSD - and
-// carry their size in ATR so the number means something
-// without knowing the instrument.
+// A level, printed at the symbol's own tick precision:
+// 3350.4 on gold, 1.08423 on EURUSD.
+priceText(value) =>
+    na(value) ? "N/A" : str.tostring(value, format.mintick)
+
+// A distance. Same precision, plus its size in ATR so the
+// number means something without knowing the instrument.
 pointsText(value) =>
     na(value) ? "N/A" :
      str.tostring(value, format.mintick) +
@@ -583,7 +678,7 @@ pointsText(value) =>
 var table dash = table.new(
      position.top_right,
      2,
-     26,
+     34,
      border_width=1)
 
 if barstate.islast
@@ -679,6 +774,156 @@ if barstate.islast
          r,
          currentSetup,
          bgcolor=color.new(setupColor, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // RANGE HIGH  (last N candles)
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Range High (" + str.tostring(rangeLen) + ")",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         priceText(rangeHigh),
+         bgcolor=color.new(color.red, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // RANGE LOW
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Range Low (" + str.tostring(rangeLen) + ")",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         priceText(rangeLow),
+         bgcolor=color.new(color.green, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // RANGE MID
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Range Mid",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         priceText(rangeMid),
+         bgcolor=color.new(color.gray, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // RANGE AVERAGE
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Range Avg (SMA " + str.tostring(rangeLen) + ")",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         priceText(rangeAvg),
+         bgcolor=color.new(color.gray, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // POSITION IN RANGE
+    // 0% = on the range low, 100% = on the range high
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Position in Range",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         na(positionInRange) ?
+              "N/A" :
+              str.tostring(positionInRange, "#.0") + "%  " + rangeZone,
+         bgcolor=color.new(rangeZoneColor, 80),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // ROOM TO RANGE HIGH
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Room to High",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(roomToHigh),
+         bgcolor=color.new(color.red, 88),
+         text_color=color.black)
+
+    r += 1
+
+    //=================================================
+    // ROOM TO RANGE LOW
+    //=================================================
+
+    table.cell(
+         dash,
+         0,
+         r,
+         "Room to Low",
+         text_color=color.black)
+
+    table.cell(
+         dash,
+         1,
+         r,
+         pointsText(roomToLow),
+         bgcolor=color.new(color.green, 88),
          text_color=color.black)
 
     r += 1
@@ -901,69 +1146,6 @@ if barstate.islast
     r += 1
 
     //=================================================
-    // BUY MAX POTENTIAL
-    //=================================================
-
-    table.cell(
-         dash,
-         0,
-         r,
-         "BUY Max Potential",
-         text_color=color.black)
-
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(buyMaximum),
-         bgcolor=color.new(color.green, 85),
-         text_color=color.black)
-
-    r += 1
-
-    //=================================================
-    // BUY AVERAGE POTENTIAL
-    //=================================================
-
-    table.cell(
-         dash,
-         0,
-         r,
-         "BUY Avg Potential",
-         text_color=color.black)
-
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(buyAverage),
-         bgcolor=color.new(color.green, 85),
-         text_color=color.black)
-
-    r += 1
-
-    //=================================================
-    // BUY MEDIAN POTENTIAL
-    //=================================================
-
-    table.cell(
-         dash,
-         0,
-         r,
-         "BUY Median Potential",
-         text_color=color.black)
-
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(buyMedian),
-         bgcolor=color.new(color.green, 88),
-         text_color=color.black)
-
-    r += 1
-
-    //=================================================
     // SELL CONFIDENCE
     //=================================================
 
@@ -987,67 +1169,140 @@ if barstate.islast
     r += 1
 
     //=================================================
-    // SELL MAX POTENTIAL
+    // OPTIONAL POTENTIAL STATISTICS
+    //
+    // How far price ran in favour of the last N setups
+    // before they died. Target-sizing information, not
+    // entry information - hidden unless asked for.
     //=================================================
 
-    table.cell(
-         dash,
-         0,
-         r,
-         "SELL Max Potential",
-         text_color=color.black)
+    if showPotentialStats
 
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(sellMaximum),
-         bgcolor=color.new(color.red, 85),
-         text_color=color.black)
+        //=================================================
+        // BUY MAX POTENTIAL
+        //=================================================
 
-    r += 1
+        table.cell(
+             dash,
+             0,
+             r,
+             "BUY Max Potential",
+             text_color=color.black)
 
-    //=================================================
-    // SELL AVERAGE POTENTIAL
-    //=================================================
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(buyMaximum),
+             bgcolor=color.new(color.green, 85),
+             text_color=color.black)
 
-    table.cell(
-         dash,
-         0,
-         r,
-         "SELL Avg Potential",
-         text_color=color.black)
+        r += 1
 
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(sellAverage),
-         bgcolor=color.new(color.red, 85),
-         text_color=color.black)
+        //=================================================
+        // BUY AVERAGE POTENTIAL
+        //=================================================
 
-    r += 1
+        table.cell(
+             dash,
+             0,
+             r,
+             "BUY Avg Potential",
+             text_color=color.black)
 
-    //=================================================
-    // SELL MEDIAN POTENTIAL
-    //=================================================
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(buyAverage),
+             bgcolor=color.new(color.green, 85),
+             text_color=color.black)
 
-    table.cell(
-         dash,
-         0,
-         r,
-         "SELL Median Potential",
-         text_color=color.black)
+        r += 1
 
-    table.cell(
-         dash,
-         1,
-         r,
-         pointsText(sellMedian),
-         bgcolor=color.new(color.red, 88),
-         text_color=color.black)
+        //=================================================
+        // BUY MEDIAN POTENTIAL
+        //=================================================
 
-    r += 1
+        table.cell(
+             dash,
+             0,
+             r,
+             "BUY Median Potential",
+             text_color=color.black)
+
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(buyMedian),
+             bgcolor=color.new(color.green, 88),
+             text_color=color.black)
+
+        r += 1
+
+        //=================================================
+        // SELL MAX POTENTIAL
+        //=================================================
+
+        table.cell(
+             dash,
+             0,
+             r,
+             "SELL Max Potential",
+             text_color=color.black)
+
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(sellMaximum),
+             bgcolor=color.new(color.red, 85),
+             text_color=color.black)
+
+        r += 1
+
+        //=================================================
+        // SELL AVERAGE POTENTIAL
+        //=================================================
+
+        table.cell(
+             dash,
+             0,
+             r,
+             "SELL Avg Potential",
+             text_color=color.black)
+
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(sellAverage),
+             bgcolor=color.new(color.red, 85),
+             text_color=color.black)
+
+        r += 1
+
+        //=================================================
+        // SELL MEDIAN POTENTIAL
+        //=================================================
+
+        table.cell(
+             dash,
+             0,
+             r,
+             "SELL Median Potential",
+             text_color=color.black)
+
+        table.cell(
+             dash,
+             1,
+             r,
+             pointsText(sellMedian),
+             bgcolor=color.new(color.red, 88),
+             text_color=color.black)
+
+        r += 1
 
     //=================================================
     // TARGET REFERENCE

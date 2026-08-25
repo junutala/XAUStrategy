@@ -18,8 +18,10 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   it trades whatever chart you apply it to.
 - **`ARUN_Indicator_Pro.pine`** — the ARUN Pro v6 confidence-engine indicator: EMA
   cross + slow-EMA side entries, MTF and ATR-normalised angle filters, and a dashboard
-  scoring the last N setups by how far price actually travelled. Reads the chart's own
-  symbol, and all thresholds are measured in ATR so it works on any pair you select.
+  covering the 50-candle range (high / low / mid / average, where price sits inside it,
+  and the room left to each wall in ATR) plus a confidence score over the last N setups.
+  Reads the chart's own symbol, and all thresholds are measured in ATR so it works on
+  any pair you select.
 - **`Triple_EMA_Cross_Alerts.pine`** — a lightweight EMA-cross alert indicator (the seed
   of the scalping trigger).
 
