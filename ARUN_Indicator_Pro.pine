@@ -34,18 +34,32 @@ atrLen = input.int(
      tooltip = "Everything measured in price units is normalised by this ATR, " +
                "so the same settings behave the same way on any instrument.")
 
-//---- 50-candle range ----
+//---- price range ----
 // Where price sits inside its recent range, and how much
 // room is left to each wall. This is the entry / exit
 // context: the same EMA cross is a different trade at the
 // bottom of the range than at the top.
+//
+// The window follows the Slow EMA length by default, so
+// the range and the trend line you are reading against
+// cover the same stretch of market. Change the Slow EMA
+// and the range follows it.
 
-rangeLen = input.int(
+linkRangeToSlow = input.bool(
+     true,
+     "Range Lookback = Slow EMA Length",
+     group = "Price Range",
+     tooltip = "On: the range is measured over the Slow EMA's own length, so " +
+               "both describe the same window. Off: use the manual value below.")
+
+rangeLenManual = input.int(
      50,
-     "Range Lookback (Candles)",
+     "Range Lookback (Candles) - used when unlinked",
      minval=5,
      maxval=500,
      group = "Price Range")
+
+rangeLen = linkRangeToSlow ? slowLen : rangeLenManual
 
 showRangeLines = input.bool(
      true,
@@ -155,17 +169,17 @@ atrRef = ta.atr(atrLen)
 atrSafe = na(atrRef) or atrRef <= 0 ? syminfo.mintick : atrRef
 
 //=====================================================
-// 50-CANDLE PRICE RANGE
+// PRICE RANGE OVER THE LOOKBACK WINDOW
 //
-// rangeAvg is the mean of the last N closes - note that
-// it sits almost on top of the Slow EMA already plotted,
-// so rangeMid is usually the more informative anchor.
+// No average row: the mean of the last N closes tracks
+// the Slow EMA already plotted, so it would repeat a line
+// that is on the chart. rangeMid - the midpoint of the
+// actual high/low box - is the anchor that adds something.
 //=====================================================
 
 rangeHigh = ta.highest(high, rangeLen)
 rangeLow = ta.lowest(low, rangeLen)
 rangeMid = (rangeHigh + rangeLow) / 2
-rangeAvg = ta.sma(close, rangeLen)
 
 rangeSpan = rangeHigh - rangeLow
 
@@ -828,7 +842,7 @@ if barstate.islast
          dash,
          0,
          r,
-         "Range Mid",
+         linkRangeToSlow ? "Range Mid (= Slow EMA len)" : "Range Mid",
          text_color=color.black)
 
     table.cell(
@@ -836,27 +850,6 @@ if barstate.islast
          1,
          r,
          priceText(rangeMid),
-         bgcolor=color.new(color.gray, 88),
-         text_color=color.black)
-
-    r += 1
-
-    //=================================================
-    // RANGE AVERAGE
-    //=================================================
-
-    table.cell(
-         dash,
-         0,
-         r,
-         "Range Avg (SMA " + str.tostring(rangeLen) + ")",
-         text_color=color.black)
-
-    table.cell(
-         dash,
-         1,
-         r,
-         priceText(rangeAvg),
          bgcolor=color.new(color.gray, 88),
          text_color=color.black)
 
