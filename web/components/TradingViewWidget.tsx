@@ -6,6 +6,12 @@ import { useEffect, useRef } from "react";
 // not, and cannot, feed the app's own calculations (TradingView has no free data
 // API; their real-time feed is licensed and can't be redistributed). The bias /
 // VWAP / scalp numbers still come from Yahoo Finance in lib/report.ts.
+//
+// `symbol` follows the pair picked in the header. Symbol switching *inside* the
+// widget stays disabled (`allow_symbol_change: false`) on purpose: the embed
+// can't report a symbol change back to the page, so letting it change here would
+// leave the chart showing one pair while every computed number described another.
+// Change pairs with the picker and both sides stay in sync.
 export default function TradingViewWidget({
   symbol = "TICKMILL:XAUUSD",
   interval = "5",

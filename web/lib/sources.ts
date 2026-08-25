@@ -80,34 +80,61 @@ export async function fredSeries(
   return { dates, values };
 }
 
-// ---- CFTC COT (Socrata, no key) — managed-money net for COMEX gold ---------
-// Dataset 6dca-aqww = Disaggregated Futures-Only. Gold contract code 088691.
-export async function cftcGoldNet(
+// ---- CFTC COT (Socrata, no key) — speculative net positioning ---------------
+// Two datasets cover everything we chart:
+//   6dca-aqww  Disaggregated futures-only (commodities: metals, energy)
+//   gpe5-46if  Traders in Financial Futures (FX, indices, crypto)
+// Column names differ between them (and have changed over time), so we pull the
+// whole row and probe a list of known long/short field pairs.
+const COT_DATASETS: Record<string, string> = {
+  disaggregated: "6dca-aqww",
+  financial: "gpe5-46if",
+};
+
+const COT_FIELD_PAIRS: [string, string][] = [
+  ["m_money_positions_long_all", "m_money_positions_short_all"], // disaggregated managed money
+  ["lev_money_positions_long", "lev_money_positions_short"], // TFF leveraged funds
+  ["lev_money_positions_long_all", "lev_money_positions_short_all"],
+  ["noncomm_positions_long_all", "noncomm_positions_short_all"], // legacy non-commercial
+];
+
+function pickNet(row: Record<string, unknown>): number | null {
+  for (const [lk, sk] of COT_FIELD_PAIRS) {
+    const l = parseFloat(String(row[lk]));
+    const sh = parseFloat(String(row[sk]));
+    if (!isNaN(l) && !isNaN(sh)) return l - sh;
+  }
+  return null;
+}
+
+export async function cftcNet(
+  code: string,
+  dataset: "disaggregated" | "financial" = "disaggregated",
+  invert = false,
   revalidate = 21600,
 ): Promise<{ dates: string[]; net: number[]; weeklyChange: number[] }> {
+  const res_id = COT_DATASETS[dataset] || COT_DATASETS.disaggregated;
   const url =
-    "https://publicreporting.cftc.gov/resource/6dca-aqww.json" +
-    "?$where=cftc_contract_market_code='088691'" +
-    "&$order=report_date_as_yyyy_mm_dd DESC&$limit=20" +
-    "&$select=report_date_as_yyyy_mm_dd,m_money_positions_long_all,m_money_positions_short_all";
+    `https://publicreporting.cftc.gov/resource/${res_id}.json` +
+    `?$where=cftc_contract_market_code='${code}'` +
+    "&$order=report_date_as_yyyy_mm_dd DESC&$limit=20";
   const res = await fetch(url, {
     headers: { "User-Agent": UA, Accept: "application/json" },
     next: { revalidate },
   });
-  if (!res.ok) throw new Error(`cftc ${res.status}`);
-  const rows: any[] = await res.json();
-  if (!rows?.length) throw new Error("cftc empty");
-  // rows are newest-first; reverse to chronological
-  rows.reverse();
+  if (!res.ok) throw new Error(`cftc ${code} ${res.status}`);
+  const rows: Record<string, unknown>[] = await res.json();
+  if (!rows?.length) throw new Error(`cftc ${code} empty`);
+  rows.reverse(); // newest-first -> chronological
   const dates: string[] = [];
   const net: number[] = [];
   for (const r of rows) {
-    const long = parseFloat(r.m_money_positions_long_all);
-    const short = parseFloat(r.m_money_positions_short_all);
-    if (isNaN(long) || isNaN(short)) continue;
+    const n = pickNet(r);
+    if (n == null) continue;
     dates.push(String(r.report_date_as_yyyy_mm_dd).slice(0, 10));
-    net.push(long - short);
+    net.push(invert ? -n : n);
   }
+  if (net.length < 2) throw new Error(`cftc ${code} no usable columns`);
   const weeklyChange: number[] = [];
   for (let i = 1; i < net.length; i++)
     weeklyChange.push((net[i] - net[i - 1]) / 1000); // thousands of contracts
@@ -116,13 +143,20 @@ export async function cftcGoldNet(
 
 // ---- Curated US high-impact event calendar ---------------------------------
 // No reliable free calendar API; we generate the recurring US macro events that
-// move gold from known rules (NFP = first Friday) plus a scheduled FOMC list.
-// Labelled "scheduled" in the UI — swap for a calendar API later for precision.
+// move every dollar-denominated market from known rules (NFP = first Friday)
+// plus a scheduled FOMC list. The "watch" column is written from the selected
+// instrument's dollar / real-yield sensitivity, so the same calendar reads
+// correctly for gold, EURUSD, USDJPY or Nasdaq.
 export interface CalItem {
   date: string;
   event: string;
   impact: "High" | "Med" | "Low";
   watch: string;
+}
+
+export interface EventTone {
+  usdBeta: -1 | 0 | 1; // pair's response to a stronger dollar
+  yieldBeta: -1 | 0 | 1; // pair's response to higher real yields
 }
 
 const FOMC_2026 = [
@@ -147,7 +181,26 @@ function iso(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function eventCalendar(today = new Date(), horizonDays = 10): CalItem[] {
+// "Hot" US data => stronger dollar and higher yields. Translate that into what
+// it means for this particular pair.
+function hotWatch(t: EventTone, what: string): string {
+  const score = t.usdBeta + t.yieldBeta; // +2 helped .. -2 hurt by hot data
+  if (score > 0) return `hot ${what} = tailwind`;
+  if (score < 0) return `hot ${what} = headwind`;
+  return `hot ${what} = two-way, trade the level`;
+}
+function softWatch(t: EventTone, what: string): string {
+  const score = t.usdBeta + t.yieldBeta;
+  if (score > 0) return `soft ${what} = headwind`;
+  if (score < 0) return `soft ${what} = tailwind`;
+  return `soft ${what} = two-way, trade the level`;
+}
+
+export function eventCalendar(
+  today = new Date(),
+  horizonDays = 10,
+  tone: EventTone = { usdBeta: -1, yieldBeta: -1 },
+): CalItem[] {
   const items: CalItem[] = [];
   const y = today.getUTCFullYear();
   const m = today.getUTCMonth();
@@ -159,14 +212,14 @@ export function eventCalendar(today = new Date(), horizonDays = 10): CalItem[] {
       date: iso(firstFriday(yy, mo)),
       event: "US Nonfarm Payrolls",
       impact: "High",
-      watch: "hot jobs = gold headwind",
+      watch: hotWatch(tone, "jobs"),
     });
     // CPI ~ mid-month (approx, verify)
     items.push({
       date: iso(new Date(Date.UTC(yy, mo, 12))),
       event: "US CPI (approx)",
       impact: "High",
-      watch: "softer = bullish gold",
+      watch: softWatch(tone, "CPI"),
     });
     // PCE ~ end of month (approx)
     items.push({
@@ -181,7 +234,7 @@ export function eventCalendar(today = new Date(), horizonDays = 10): CalItem[] {
       date: f,
       event: "FOMC decision",
       impact: "High",
-      watch: "rate path + dots move gold",
+      watch: "rate path + dots move the dollar",
     });
 
   const start = iso(today);

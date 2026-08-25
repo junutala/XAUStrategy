@@ -3,7 +3,6 @@ import {
   rsi,
   atr,
   adx,
-  sma,
   pctChange,
   lastFinite,
   correlationOfReturns,
@@ -14,23 +13,31 @@ import {
 import {
   yahooBars,
   fredSeries,
-  cftcGoldNet,
+  cftcNet,
   eventCalendar,
   Bars,
   CalItem,
 } from "./sources";
+import {
+  Instrument,
+  SessionBand,
+  resolveInstrument,
+  peersFor,
+  correlatesFor,
+  DEFAULT_INSTRUMENT_ID,
+} from "./instruments";
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — all instrument-agnostic. Nothing here says "gold".
 // ---------------------------------------------------------------------------
 export interface Series {
   labels: string[];
   values: number[];
 }
 export interface KPI {
-  xau: number;
-  xauChgPct: number;
-  gvz: number;
+  price: number;
+  priceChgPct: number;
+  vol: number | null; // instrument's vol index (GVZ / VIX / OVX / EVZ …)
   dxy: number;
   dxyChgPct: number;
   realYield: number;
@@ -87,7 +94,26 @@ export interface PredRow {
   r5: number | null;
   status: string;
 }
+/** The slice of the instrument definition the UI needs. */
+export interface InstrumentView {
+  id: string;
+  pair: string;
+  label: string;
+  klass: string;
+  tv: string;
+  yahoo: string;
+  decimals: number;
+  quoteCcy: string;
+  volLabel: string | null;
+  volBands: [number, number, number] | null;
+  volRange: [number, number] | null;
+  cotLabel: string | null;
+  peerLabel: string;
+  sessions: SessionBand[];
+  custom: boolean;
+}
 export interface Report {
+  instrument: InstrumentView;
   meta: {
     dateRange: string;
     generated: string;
@@ -98,9 +124,9 @@ export interface Report {
   kpi: KPI;
   regime: { badge: string; text: string; tone: "long" | "short" | "neutral" };
   price: Series;
-  gvz: Series;
-  cot: number[];
-  realYieldVsGold: { gold: number[]; realInv: number[] };
+  vol: Series | null;
+  cot: number[] | null;
+  driverOverlay: { price: number[]; realInv: number[] } | null;
   scalp: {
     intraday: number[];
     vwap: number[];
@@ -133,7 +159,50 @@ export interface Report {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic synthetic fallback (so the page always renders)
+// Small helpers
+// ---------------------------------------------------------------------------
+function toOHLC(b: Bars): OHLC {
+  return { open: b.open, high: b.high, low: b.low, close: b.close };
+}
+function tail<T>(a: T[], n: number): T[] {
+  return a.slice(Math.max(0, a.length - n));
+}
+function round(n: number, d = 0): number {
+  const f = Math.pow(10, d);
+  return Math.round(n * f) / f;
+}
+/** Round to the instrument's own price precision. */
+function px(inst: Instrument, n: number): number {
+  return round(n, inst.decimals);
+}
+function view(inst: Instrument): InstrumentView {
+  return {
+    id: inst.id,
+    pair: inst.pair,
+    label: inst.label,
+    klass: inst.klass,
+    tv: inst.tv,
+    yahoo: inst.yahoo,
+    decimals: inst.decimals,
+    quoteCcy: inst.quoteCcy,
+    volLabel: inst.vol?.label ?? null,
+    volBands: inst.vol?.bands ?? null,
+    volRange: inst.vol?.range ?? null,
+    cotLabel: inst.cot?.label ?? null,
+    peerLabel: inst.peerLabel,
+    sessions: inst.sessions,
+    custom: !!inst.custom,
+  };
+}
+function fmtRange(today: Date): string {
+  const from = new Date(today.getTime() - 6 * 864e5);
+  const opt: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short" };
+  return `${from.toLocaleDateString("en-GB", opt)} – ${today.toLocaleDateString("en-GB", { ...opt, year: "numeric" })}`;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic synthetic fallback, scaled to the instrument's price level so
+// the page always renders something plausible for whatever pair was picked.
 // ---------------------------------------------------------------------------
 function mulberry32(a: number) {
   return function () {
@@ -153,24 +222,22 @@ function walk(rng: () => number, n: number, start: number, vol: number, drift: n
   }
   return a;
 }
-function fmtRange(today: Date): string {
-  const from = new Date(today.getTime() - 6 * 864e5);
-  const opt: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short" };
-  return `${from.toLocaleDateString("en-GB", opt)} – ${today.toLocaleDateString("en-GB", { ...opt, year: "numeric" })}`;
-}
 
-export function sampleReport(today = new Date()): Report {
+export function sampleReport(inst: Instrument, today = new Date()): Report {
   const rng = mulberry32(20260716);
+  const A = inst.sampleAnchor; // price anchor
   const N = 40;
-  const gold = walk(rng, N, 3262, 15, 2.3);
-  gold[N - 1] = 3351;
-  const gvz: number[] = [];
-  let v = 18;
+  // Drift chosen so the walk lands on the anchor rather than jumping to it.
+  const price = walk(rng, N, A * 0.975, A * 0.006, (A * 0.025) / N);
+  price[N - 1] = A;
+  const bands = inst.vol?.bands ?? [12, 18, 24];
+  const volMid = bands[1] * 0.87;
+  const volSeries: number[] = [];
+  let v = bands[1];
   for (let i = 0; i < N; i++) {
-    v += (15.6 - v) * 0.08 + (rng() - 0.5) * 1.3;
-    gvz.push(Math.max(10, v));
+    v += (volMid - v) * 0.08 + (rng() - 0.5) * bands[0] * 0.1;
+    volSeries.push(Math.max(bands[0] * 0.7, v));
   }
-  gvz[N - 1] = 15.6;
   const realInv: number[] = [];
   let r = 0;
   for (let i = 0; i < N; i++) {
@@ -178,8 +245,8 @@ export function sampleReport(today = new Date()): Report {
     realInv.push(r);
   }
   const M = 90;
-  const intraday = walk(rng, M, 3345, 0.9, 0.055);
-  intraday[M - 1] = 3349.5;
+  const intraday = walk(rng, M, A * 0.9985, A * 0.0008, (A * 0.0015) / M);
+  intraday[M - 1] = A;
   const vwap: number[] = [];
   let s = 0;
   for (let i = 0; i < M; i++) {
@@ -187,8 +254,11 @@ export function sampleReport(today = new Date()): Report {
     vwap.push(s / (i + 1));
   }
   const labels = Array.from({ length: N }, (_, i) => String(i));
+  const a = A * 0.006; // ~ATR
+  const P = (x: number) => px(inst, x);
 
   return {
+    instrument: view(inst),
     meta: {
       dateRange: fmtRange(today),
       generated: today.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }),
@@ -196,16 +266,24 @@ export function sampleReport(today = new Date()): Report {
       sources: ["synthetic sample"],
       notes: ["Showing synthetic placeholder data — live sources unavailable."],
     },
-    kpi: { xau: 3351, xauChgPct: 0.42, gvz: 15.6, dxy: 97.8, dxyChgPct: -0.3, realYield: 1.78, realYieldChgBp: -4 },
-    regime: {
-      badge: "Tailwind · Long-friendly",
-      text: "Dollar soft, real yields easing, vol contained. Backdrop favours directional longs with defined risk; fade rallies only into resistance.",
-      tone: "long",
+    kpi: {
+      price: P(A),
+      priceChgPct: 0.42,
+      vol: inst.vol ? round(volMid, 1) : null,
+      dxy: 97.8,
+      dxyChgPct: -0.3,
+      realYield: 1.78,
+      realYieldChgBp: -4,
     },
-    price: { labels, values: gold },
-    gvz: { labels, values: gvz },
-    cot: [7, 11, -6, 9, 4, -9, 14, -21, 8, 6, -13, 7, 10, -5],
-    realYieldVsGold: { gold, realInv },
+    regime: {
+      badge: "Sample · no live feed",
+      text: `Synthetic placeholder for ${inst.pair} — live sources unavailable, so nothing below is a real read.`,
+      tone: "neutral",
+    },
+    price: { labels, values: price },
+    vol: inst.vol ? { labels, values: volSeries } : null,
+    cot: inst.cot ? [7, 11, -6, 9, 4, -9, 14, -21, 8, 6, -13, 7, 10, -5] : null,
+    driverOverlay: { price, realInv },
     scalp: {
       intraday,
       vwap,
@@ -213,7 +291,7 @@ export function sampleReport(today = new Date()): Report {
       ema21: ema(intraday, 21),
       playbook: "Trend-Pullback",
       playbookText:
-        "NY session, trending up, ATR expanding. Trade with-trend longs off pullbacks to VWAP / EMA — skip counter-trend fades until momentum stalls.",
+        "Trade with-trend entries off pullbacks to VWAP / EMA — skip counter-trend fades until momentum stalls.",
       biasTF: "10m",
       setupTF: "5m",
       triggerTF: "1m",
@@ -222,80 +300,51 @@ export function sampleReport(today = new Date()): Report {
       triggerState: "Long trigger ✓",
       biasTone: "Long",
       triggerTone: "Long",
-      live: { entry: 3349.5, stop: 3346.5, t1: 3353.5, t2: 3357.0, spread: 0.2 },
+      live: {
+        entry: P(A),
+        stop: P(A - a),
+        t1: P(A + a * 1.3),
+        t2: P(A + a * 2.5),
+        spread: round(A * 0.00006, Math.max(2, inst.decimals)),
+      },
     },
     signals: [
-      { tf: "H4", verdict: "Long", momentum: "Firm", adx: 27, rsi: 61, expMove: 14, support: 3338, resist: 3372 },
-      { tf: "Daily", verdict: "Long", momentum: "Firm", adx: 26, rsi: 58, expMove: 31, support: 3305, resist: 3378 },
-      { tf: "Weekly", verdict: "Neutral", momentum: "Weak", adx: 18, rsi: 54, expMove: 72, support: 3244, resist: 3431 },
+      { tf: "H4", verdict: "Long", momentum: "Firm", adx: 27, rsi: 61, expMove: P(a), support: P(A - a * 3), resist: P(A + a * 3) },
+      { tf: "Daily", verdict: "Long", momentum: "Firm", adx: 26, rsi: 58, expMove: P(a * 2), support: P(A - a * 6), resist: P(A + a * 6) },
+      { tf: "Weekly", verdict: "Neutral", momentum: "Weak", adx: 18, rsi: 54, expMove: P(a * 4), support: P(A - a * 12), resist: P(A + a * 12) },
     ],
     stance: [
-      { tf: "H4", text: "Long — momentum + trend aligned; trail stop under 3,338 swing." },
-      { tf: "Daily", text: "Long — press on ADX ≥ 25 (met); risk defined below 3,305." },
-      { tf: "Weekly", text: "Stand aside / small — ADX < 25, no edge; wait for break of 3,431 or 3,244." },
+      { tf: "H4", text: "Long — momentum + trend aligned; trail stop under the last swing." },
+      { tf: "Daily", text: "Long — press on ADX ≥ 25 (met); risk defined below the pivot." },
+      { tf: "Weekly", text: "Stand aside / small — ADX < 25, no edge; wait for a range break." },
     ],
-    rrg: [
-      { rank: 1, name: "Silver (XAG)", x: 105.1, y: 4.2, quadrant: "Leading" },
-      { rank: 2, name: "Silver miners SIL", x: 104.0, y: 6.1, quadrant: "Leading" },
-      { rank: 3, name: "Junior miners GDXJ", x: 103.0, y: 7.4, quadrant: "Leading" },
-      { rank: 4, name: "Gold miners GDX", x: 99.2, y: 5.0, quadrant: "Improving" },
-      { rank: 5, name: "Platinum", x: 101.8, y: -2.8, quadrant: "Weakening" },
-      { rank: 6, name: "Copper", x: 98.4, y: 2.1, quadrant: "Improving" },
-      { rank: 7, name: "Palladium", x: 96.1, y: -4.9, quadrant: "Lagging" },
-    ],
-    corr: [
-      { k: "Silver (XAG)", v: 0.86 },
-      { k: "Real yield", v: -0.82 },
-      { k: "DXY", v: -0.71 },
-      { k: "US10Y nom.", v: -0.55 },
-      { k: "Bitcoin", v: 0.41 },
-      { k: "S&P 500", v: 0.24 },
-      { k: "WTI oil", v: 0.16 },
-    ],
+    rrg: [],
+    corr: [],
     seasonality: [1.8, 0.4, -0.2, 0.9, -0.3, -0.6, 0.7, 1.2, 1.5, 0.3, 0.8, 1.4],
     seasonalityMonth: today.getUTCMonth(),
     setups: [
-      { name: "XAU pullback-buy", bias: "Long", entry: 3332, stop: 3304, t1: 3378, t2: 3410, rr: 1.6 },
-      { name: "XAU breakout", bias: "Long", entry: 3379, stop: 3351, t1: 3412, t2: 3448, rr: 1.2 },
-      { name: "Fade into 3,431", bias: "Short", entry: 3428, stop: 3449, t1: 3388, t2: 3360, rr: 1.9 },
+      { name: "Pullback-buy", bias: "Long", entry: P(A - a), stop: P(A - a * 2), t1: P(A + a * 0.3), t2: P(A + a * 1.5), rr: 1.3 },
+      { name: "Breakout", bias: "Long", entry: P(A + a * 3), stop: P(A + a * 2), t1: P(A + a * 4.3), t2: P(A + a * 5.5), rr: 1.3 },
+      { name: "Fade into R", bias: "Short", entry: P(A + a * 3), stop: P(A + a * 4), t1: P(A + a * 1.7), t2: P(A + a * 0.5), rr: 1.3 },
     ],
     levels: [
-      { name: "Weekly R1", type: "Resistance", price: 3431 },
-      { name: "Prior day high", type: "Resistance", price: 3372 },
-      { name: "Round number", type: "Magnet", price: 3350 },
-      { name: "Daily pivot", type: "Pivot", price: 3341 },
-      { name: "50% Fib (swing)", type: "Support", price: 3318 },
-      { name: "Weekly S1", type: "Support", price: 3244 },
+      { name: "Swing high (20d)", type: "Resistance", price: P(A + a * 3) },
+      { name: "Pivot R1", type: "Resistance", price: P(A + a * 1.5) },
+      { name: "Round number", type: "Magnet", price: round(A / inst.roundStep) * inst.roundStep },
+      { name: "Daily pivot", type: "Pivot", price: P(A) },
+      { name: "Pivot S1", type: "Support", price: P(A - a * 1.5) },
+      { name: "Swing low (20d)", type: "Support", price: P(A - a * 3) },
     ],
-    reversal: [{ signal: "Bearish RSI div", what: "H4 price ↑ / RSI ↓", rsi: 61, score: 45 }],
-    events: eventCalendar(today),
-    track: [
-      { bias: "Long", trades: 412, avg: 0.71, hit: 44.9, stopped: 28.4 },
-      { bias: "Short", trades: 261, avg: -0.22, hit: 31.0, stopped: 41.7 },
-    ],
-    predictions: [
-      { date: "16 Jul", call: "XAU pullback-buy", bias: "Long", r1: null, r5: null, status: "Open" },
-      { date: "15 Jul", call: "Break 3,340", bias: "Long", r1: 0.61, r5: null, status: "Open" },
-      { date: "14 Jul", call: "Fade 3,360", bias: "Short", r1: -0.38, r5: null, status: "Stopped" },
-      { date: "11 Jul", call: "XAU dip-buy", bias: "Long", r1: 0.44, r5: 1.72, status: "T1 hit" },
-    ],
+    reversal: [{ signal: "Reversal watch", what: "sample data — no live signal", rsi: 55, score: 40 }],
+    events: eventCalendar(today, 10, { usdBeta: inst.usdBeta, yieldBeta: inst.yieldBeta }),
+    track: [],
+    predictions: [],
   };
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for the live path
+// Live-path helpers
 // ---------------------------------------------------------------------------
-function toOHLC(b: Bars): OHLC {
-  return { open: b.open, high: b.high, low: b.low, close: b.close };
-}
-function tail<T>(a: T[], n: number): T[] {
-  return a.slice(Math.max(0, a.length - n));
-}
-function round(n: number, d = 0): number {
-  const f = Math.pow(10, d);
-  return Math.round(n * f) / f;
-}
-
 function groupBars(b: Bars, keyFn: (d: string, i: number) => string): Bars {
   const out: Bars = { dates: [], open: [], high: [], low: [], close: [] };
   let curKey = "";
@@ -324,6 +373,24 @@ function weekKey(d: string): string {
   return dt.getUTCFullYear() + "-" + week;
 }
 
+// Peer feeds don't share a session calendar (crypto trades 7 days, futures 5,
+// FX has its own holidays), so intermarket maths is done on dates the two
+// series actually share rather than on raw tail indices.
+function alignOnDates(a: Bars, b: Bars): { a: number[]; b: number[] } {
+  const m = new Map<string, number>();
+  for (let i = 0; i < b.dates.length; i++) m.set(b.dates[i], b.close[i]);
+  const x: number[] = [];
+  const y: number[] = [];
+  for (let i = 0; i < a.dates.length; i++) {
+    const v = m.get(a.dates[i]);
+    if (v != null) {
+      x.push(a.close[i]);
+      y.push(v);
+    }
+  }
+  return x.length >= 25 ? { a: x, b: y } : { a: a.close, b: b.close };
+}
+
 function momentumLabel(a: number): string {
   if (isNaN(a)) return "—";
   if (a >= 25) return "Strong";
@@ -331,7 +398,7 @@ function momentumLabel(a: number): string {
   return "Weak";
 }
 
-function computeSignal(tf: string, b: Bars): SignalRow {
+function computeSignal(inst: Instrument, tf: string, b: Bars): SignalRow {
   const c = b.close;
   const e9 = ema(c, 9);
   const e21 = ema(c, 21);
@@ -353,13 +420,13 @@ function computeSignal(tf: string, b: Bars): SignalRow {
     momentum: momentumLabel(lastFinite(adxs)),
     adx: round(lastFinite(adxs)),
     rsi: round(lastFinite(rs)),
-    expMove: round(lastFinite(a)),
-    support: round(Math.min(...look)),
-    resist: round(Math.max(...look)),
+    expMove: px(inst, lastFinite(a)),
+    support: px(inst, Math.min(...look)),
+    resist: px(inst, Math.max(...look)),
   };
 }
 
-// Light backtest of daily EMA9/EMA21 cross for the track-record table.
+// Light backtest of the daily EMA9/EMA21 cross for the track-record table.
 function backtest(b: Bars): TrackRow[] {
   const c = b.close;
   const e9 = ema(c, 9);
@@ -377,23 +444,19 @@ function backtest(b: Bars): TrackRow[] {
     const dir = up ? 1 : -1;
     const t1 = entry + dir * risk * 1.3;
     const st = entry - dir * risk * 1.1;
-    let done = false;
     for (let j = i + 1; j <= i + 10 && j < c.length; j++) {
       if (dir * (c[j] - t1) >= 0) {
         side.hit++;
-        done = true;
         break;
       }
       if (dir * (st - c[j]) >= 0) {
         side.stopped++;
-        done = true;
         break;
       }
     }
     const exit = c[Math.min(i + 10, c.length - 1)];
     side.ret += (dir * (exit - entry)) / entry;
     side.trades++;
-    void done;
   }
   const mk = (bias: Bias, s: typeof long): TrackRow => ({
     bias,
@@ -405,76 +468,121 @@ function backtest(b: Bars): TrackRow[] {
   return [mk("Long", long), mk("Short", short)];
 }
 
+// The last few EMA9/21 crosses with their realised 1D / 5D returns — a real
+// (if simple) scorecard instead of hard-coded illustrative rows.
+function recentCalls(b: Bars): PredRow[] {
+  const c = b.close;
+  const e9 = ema(c, 9);
+  const e21 = ema(c, 21);
+  const a = atr(toOHLC(b), 14);
+  const rows: PredRow[] = [];
+  for (let i = 30; i < c.length; i++) {
+    const up = e9[i] > e21[i] && e9[i - 1] <= e21[i - 1];
+    const dn = e9[i] < e21[i] && e9[i - 1] >= e21[i - 1];
+    if (!up && !dn) continue;
+    const dir = up ? 1 : -1;
+    const entry = c[i];
+    const risk = a[i] || entry * 0.005;
+    const r1 = i + 1 < c.length ? round((dir * (c[i + 1] - entry) * 100) / entry, 2) : null;
+    const r5 = i + 5 < c.length ? round((dir * (c[i + 5] - entry) * 100) / entry, 2) : null;
+    let status = "Open";
+    for (let j = i + 1; j <= i + 10 && j < c.length; j++) {
+      if (dir * (c[j] - (entry + dir * risk * 1.3)) >= 0) {
+        status = "T1 hit";
+        break;
+      }
+      if (dir * (entry - dir * risk * 1.1 - c[j]) >= 0) {
+        status = "Stopped";
+        break;
+      }
+    }
+    if (status === "Open" && i + 10 < c.length) status = "Timed out";
+    const dt = new Date(b.dates[i] + "T00:00:00Z");
+    rows.push({
+      date: dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", timeZone: "UTC" }),
+      call: `EMA9×21 ${up ? "bull" : "bear"} cross`,
+      bias: up ? "Long" : "Short",
+      r1,
+      r5,
+      status,
+    });
+  }
+  return rows.slice(-5).reverse();
+}
+
 // ---------------------------------------------------------------------------
-// buildReport: sample base, overlaid with whatever live sources succeed.
+// buildReport(pair): sample base for the chosen instrument, overlaid with
+// whatever live sources succeed. Everything below is driven by the instrument
+// definition — no symbol is hard-coded.
 // ---------------------------------------------------------------------------
-export async function buildReport(): Promise<Report> {
+export async function buildReport(pair?: string | null): Promise<Report> {
+  const inst = resolveInstrument(pair || DEFAULT_INSTRUMENT_ID);
   const today = new Date();
-  const rep = sampleReport(today);
+  const rep = sampleReport(inst, today);
   const notes: string[] = [];
   const sources: string[] = [];
   let live = false;
 
-  // ---- core: gold daily ----
-  let goldDaily: Bars | null = null;
+  // ---- core: instrument daily bars ----
+  let daily: Bars | null = null;
   try {
-    goldDaily = await yahooBars("GC=F", "6mo", "1d");
+    daily = await yahooBars(inst.yahoo, "6mo", "1d");
     live = true;
-    sources.push("Yahoo (gold GC=F)");
-    const c = goldDaily.close;
-    const px = tail(c, 40);
-    rep.price = { labels: tail(goldDaily.dates, 40), values: px };
-    rep.kpi.xau = round(c[c.length - 1], 1);
-    rep.kpi.xauChgPct = round(pctChange(c, 1), 2);
+    sources.push(`Yahoo (${inst.pair} ${inst.yahoo})`);
+    const c = daily.close;
+    rep.price = { labels: tail(daily.dates, 40), values: tail(c, 40) };
+    rep.kpi.price = px(inst, c[c.length - 1]);
+    rep.kpi.priceChgPct = round(pctChange(c, 1), 2);
 
-    const daily = computeSignal("Daily", goldDaily);
-    const weekly = computeSignal("Weekly", groupBars(goldDaily, weekKey));
-    rep.signals = [rep.signals[0], daily, weekly]; // keep H4 (filled below if intraday works)
-    rep.track = backtest(goldDaily);
+    const dSig = computeSignal(inst, "Daily", daily);
+    const wSig = computeSignal(inst, "Weekly", groupBars(daily, weekKey));
+    rep.signals = [rep.signals[0], dSig, wSig]; // H4 filled below if intraday works
+    rep.track = backtest(daily);
+    rep.predictions = recentCalls(daily);
 
-    // levels from last daily bar (classic pivots) + swing
+    // levels from the last daily bar (classic pivots) + 20-day swing
     const n = c.length - 1;
-    const H = goldDaily.high[n],
-      L = goldDaily.low[n],
+    const H = daily.high[n],
+      L = daily.low[n],
       C = c[n];
     const P = (H + L + C) / 3;
-    const swingHi = Math.max(...tail(goldDaily.high, 20));
-    const swingLo = Math.min(...tail(goldDaily.low, 20));
+    const swingHi = Math.max(...tail(daily.high, 20));
+    const swingLo = Math.min(...tail(daily.low, 20));
     rep.levels = [
-      { name: "Swing high (20d)", type: "Resistance", price: round(swingHi, 1) },
-      { name: "Pivot R1", type: "Resistance", price: round(2 * P - L, 1) },
-      { name: "Round number", type: "Magnet", price: round(C / 50) * 50 },
-      { name: "Daily pivot", type: "Pivot", price: round(P, 1) },
-      { name: "Pivot S1", type: "Support", price: round(2 * P - H, 1) },
-      { name: "Swing low (20d)", type: "Support", price: round(swingLo, 1) },
+      { name: "Swing high (20d)", type: "Resistance", price: px(inst, swingHi) },
+      { name: "Pivot R1", type: "Resistance", price: px(inst, 2 * P - L) },
+      { name: "Round number", type: "Magnet", price: round(Math.round(C / inst.roundStep) * inst.roundStep, inst.decimals) },
+      { name: "Daily pivot", type: "Pivot", price: px(inst, P) },
+      { name: "Pivot S1", type: "Support", price: px(inst, 2 * P - H) },
+      { name: "Swing low (20d)", type: "Support", price: px(inst, swingLo) },
     ];
-    const a = lastFinite(atr(toOHLC(goldDaily), 14)) || C * 0.006;
+    const a = lastFinite(atr(toOHLC(daily), 14)) || C * 0.006;
     rep.setups = [
-      { name: "Pullback-buy", bias: "Long", entry: round(P, 1), stop: round(P - a, 1), t1: round(P + a * 1.3, 1), t2: round(P + a * 2.5, 1), rr: 1.3 },
-      { name: "Breakout", bias: "Long", entry: round(swingHi, 1), stop: round(swingHi - a, 1), t1: round(swingHi + a * 1.3, 1), t2: round(swingHi + a * 2.5, 1), rr: 1.3 },
-      { name: "Fade into R", bias: "Short", entry: round(swingHi, 1), stop: round(swingHi + a, 1), t1: round(swingHi - a * 1.3, 1), t2: round(swingHi - a * 2.5, 1), rr: 1.3 },
+      { name: "Pullback-buy", bias: "Long", entry: px(inst, P), stop: px(inst, P - a), t1: px(inst, P + a * 1.3), t2: px(inst, P + a * 2.5), rr: 1.3 },
+      { name: "Breakout", bias: "Long", entry: px(inst, swingHi), stop: px(inst, swingHi - a), t1: px(inst, swingHi + a * 1.3), t2: px(inst, swingHi + a * 2.5), rr: 1.3 },
+      { name: "Fade into R", bias: "Short", entry: px(inst, swingHi), stop: px(inst, swingHi + a), t1: px(inst, swingHi - a * 1.3), t2: px(inst, swingHi - a * 2.5), rr: 1.3 },
     ];
     const rsNow = lastFinite(rsi(c, 14));
     rep.reversal = [
       {
-        signal: daily.verdict === "Long" ? "Overbought watch" : "Reversal watch",
-        what: `Daily RSI ${round(rsNow)} · ADX ${daily.adx}`,
+        signal: dSig.verdict === "Long" ? "Overbought watch" : "Reversal watch",
+        what: `Daily RSI ${round(rsNow)} · ADX ${dSig.adx}`,
         rsi: round(rsNow),
-        score: round(Math.abs(rsNow - 50) + daily.adx),
+        score: round(Math.abs(rsNow - 50) + dSig.adx),
       },
     ];
     rep.stance = [
-      { tf: "H4", text: `${rep.signals[0].verdict} — intraday alignment; trail under recent swing.` },
-      { tf: "Daily", text: `${daily.verdict} — press on ADX ≥ 25 (now ${daily.adx}); risk below ${rep.levels[4].price}.` },
-      { tf: "Weekly", text: `${weekly.verdict} — ${weekly.adx < 25 ? "no edge, wait for break of " + rep.levels[0].price + " / " + rep.levels[5].price : "trend intact"}.` },
+      { tf: "H4", text: `${rep.signals[0].verdict} — intraday alignment; trail under the recent swing.` },
+      { tf: "Daily", text: `${dSig.verdict} — press on ADX ≥ 25 (now ${dSig.adx}); risk below ${rep.levels[4].price}.` },
+      { tf: "Weekly", text: `${wSig.verdict} — ${wSig.adx < 25 ? "no edge, wait for a break of " + rep.levels[0].price + " / " + rep.levels[5].price : "trend intact"}.` },
     ];
-  } catch (e) {
-    notes.push("Gold price feed unavailable — using sample prices.");
+  } catch {
+    notes.push(`${inst.pair} price feed unavailable — using sample prices.`);
   }
 
-  // ---- gold seasonality (10y monthly) ----
+  // ---- seasonality (10y monthly) ----
   try {
-    const mo = await yahooBars("GC=F", "10y", "1mo");
+    const mo = await yahooBars(inst.yahoo, "10y", "1mo");
     const byMonth: number[][] = Array.from({ length: 12 }, () => []);
     for (let i = 1; i < mo.close.length; i++) {
       const m = new Date(mo.dates[i] + "T00:00:00Z").getUTCMonth();
@@ -487,17 +595,22 @@ export async function buildReport(): Promise<Report> {
     notes.push("Seasonality feed unavailable — using sample.");
   }
 
-  // ---- GVZ (gold vol) ----
-  try {
-    const gvz = await yahooBars("^GVZ", "3mo", "1d");
-    rep.gvz = { labels: tail(gvz.dates, 40), values: tail(gvz.close, 40) };
-    rep.kpi.gvz = round(gvz.close[gvz.close.length - 1], 1);
-    sources.push("Yahoo (GVZ)");
-  } catch {
-    notes.push("GVZ feed unavailable — using sample.");
+  // ---- instrument's volatility index, if it has one ----
+  if (inst.vol) {
+    try {
+      const v = await yahooBars(inst.vol.sym, "3mo", "1d");
+      rep.vol = { labels: tail(v.dates, 40), values: tail(v.close, 40) };
+      rep.kpi.vol = round(v.close[v.close.length - 1], 1);
+      sources.push(`Yahoo (${inst.vol.sym})`);
+    } catch {
+      notes.push(`${inst.vol.label} feed unavailable — using sample.`);
+    }
+  } else {
+    rep.vol = null;
+    rep.kpi.vol = null;
   }
 
-  // ---- DXY ----
+  // ---- DXY (dollar backdrop — relevant to every USD-quoted pair) ----
   let dxy: Bars | null = null;
   try {
     dxy = await yahooBars("DX-Y.NYB", "3mo", "1d");
@@ -508,89 +621,81 @@ export async function buildReport(): Promise<Report> {
     notes.push("DXY feed unavailable — using sample.");
   }
 
-  // ---- real yield (FRED DFII10) ----
+  // ---- US 10y real yield (FRED DFII10) ----
   try {
     const ry = await fredSeries("DFII10");
     rep.kpi.realYield = round(ry.values[ry.values.length - 1], 2);
     rep.kpi.realYieldChgBp = round((ry.values[ry.values.length - 1] - ry.values[ry.values.length - 2]) * 100);
-    // inverted real yield vs gold overlay (align lengths)
-    if (goldDaily) {
-      const g = tail(goldDaily.close, 40);
-      const inv = tail(ry.values, 40).map((x) => -x);
-      rep.realYieldVsGold = { gold: g, realInv: inv };
+    if (daily) {
+      rep.driverOverlay = {
+        price: tail(daily.close, 40),
+        realInv: tail(ry.values, 40).map((x) => -x),
+      };
     }
     sources.push("FRED (real yield DFII10)");
   } catch {
     notes.push("FRED real-yield feed unavailable — using sample.");
   }
 
-  // ---- CFTC COT managed-money ----
-  try {
-    const cot = await cftcGoldNet();
-    if (cot.weeklyChange.length) rep.cot = tail(cot.weeklyChange, 14).map((x) => round(x));
-    sources.push("CFTC (COT gold)");
-  } catch {
-    notes.push("CFTC COT feed unavailable — using sample.");
+  // ---- CFTC positioning, when the instrument has a futures contract ----
+  if (inst.cot) {
+    try {
+      const cot = await cftcNet(inst.cot.code, inst.cot.dataset, inst.cot.invert);
+      if (cot.weeklyChange.length) rep.cot = tail(cot.weeklyChange, 14).map((x) => round(x));
+      sources.push(`CFTC (${inst.pair} COT)`);
+    } catch {
+      rep.cot = null;
+      notes.push("CFTC positioning unavailable for this pair.");
+    }
+  } else {
+    rep.cot = null;
   }
 
-  // ---- intermarket: RRG + correlations ----
-  try {
-    if (goldDaily) {
-      const gc = goldDaily.close;
-      const complex: { key: string; name: string; sym: string }[] = [
-        { key: "SI=F", name: "Silver (XAG)", sym: "SI=F" },
-        { key: "SIL", name: "Silver miners SIL", sym: "SIL" },
-        { key: "GDXJ", name: "Junior miners GDXJ", sym: "GDXJ" },
-        { key: "GDX", name: "Gold miners GDX", sym: "GDX" },
-        { key: "PL=F", name: "Platinum", sym: "PL=F" },
-        { key: "HG=F", name: "Copper", sym: "HG=F" },
-        { key: "PA=F", name: "Palladium", sym: "PA=F" },
-      ];
-      const pts: RRGPoint[] = [];
-      for (const c of complex) {
-        try {
-          const b = await yahooBars(c.sym, "6mo", "1d");
-          const { ratio, momentum } = rsRatioMomentum(b.close, gc, 20);
-          pts.push({ rank: 0, name: c.name, x: round(ratio, 1), y: round(momentum, 2), quadrant: quadrant(ratio, momentum) });
-        } catch {
-          /* skip this leg */
-        }
-      }
-      if (pts.length >= 3) {
-        pts.sort((a, b) => b.x - a.x);
-        pts.forEach((p, i) => (p.rank = i + 1));
-        rep.rrg = pts;
-        sources.push("Yahoo (metals complex)");
-      }
-
-      // correlations of daily returns vs gold
-      const corr: CorrRow[] = [];
-      const addCorr = async (label: string, sym: string) => {
-        try {
-          const b = await yahooBars(sym, "3mo", "1d");
-          corr.push({ k: label, v: round(correlationOfReturns(gc, b.close), 2) });
-        } catch {
-          /* skip */
-        }
-      };
-      await addCorr("Silver (XAG)", "SI=F");
-      if (dxy) corr.push({ k: "DXY", v: round(correlationOfReturns(gc, dxy.close), 2) });
-      await addCorr("US10Y nom.", "^TNX");
-      await addCorr("Bitcoin", "BTC-USD");
-      await addCorr("S&P 500", "^GSPC");
-      await addCorr("WTI oil", "CL=F");
-      if (corr.length >= 3) {
-        corr.sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
-        rep.corr = corr;
+  // ---- intermarket: relative strength (RRG) + correlations ----
+  if (daily) {
+    const pts: RRGPoint[] = [];
+    for (const p of peersFor(inst)) {
+      try {
+        const b = await yahooBars(p.sym, "6mo", "1d");
+        const al = alignOnDates(b, daily);
+        const { ratio, momentum } = rsRatioMomentum(al.a, al.b, 20);
+        if (!isFinite(ratio) || !isFinite(momentum)) continue;
+        pts.push({ rank: 0, name: p.name, x: round(ratio, 1), y: round(momentum, 2), quadrant: quadrant(ratio, momentum) });
+      } catch {
+        /* skip this leg */
       }
     }
-  } catch {
-    notes.push("Intermarket feeds partially unavailable — using sample where missing.");
+    if (pts.length >= 3) {
+      pts.sort((a, b) => b.x - a.x);
+      pts.forEach((p, i) => (p.rank = i + 1));
+      rep.rrg = pts;
+      sources.push(`Yahoo (${inst.peerLabel.toLowerCase()})`);
+    } else {
+      notes.push("Peer-group feeds unavailable — relative-strength panel is empty.");
+    }
+
+    const corr: CorrRow[] = [];
+    for (const c of correlatesFor(inst)) {
+      try {
+        const b = c.sym === "DX-Y.NYB" && dxy ? dxy : await yahooBars(c.sym, "3mo", "1d");
+        const al = alignOnDates(daily, b);
+        const v = correlationOfReturns(al.a, al.b);
+        if (isFinite(v)) corr.push({ k: c.name, v: round(v, 2) });
+      } catch {
+        /* skip */
+      }
+    }
+    if (corr.length) {
+      corr.sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+      rep.corr = corr.slice(0, 8);
+    } else {
+      notes.push("Correlation feeds unavailable.");
+    }
   }
 
-  // ---- intraday scalping cockpit (5m) ----
+  // ---- intraday cockpit (5m) ----
   try {
-    const intr = await yahooBars("GC=F", "5d", "5m");
+    const intr = await yahooBars(inst.yahoo, "5d", "5m");
     const c = tail(intr.close, 90);
     const vwap: number[] = [];
     let s = 0;
@@ -600,12 +705,13 @@ export async function buildReport(): Promise<Report> {
     }
     const e9 = ema(c, 9);
     const e21 = ema(c, 21);
-    const e50 = ema(c, 50);
     const lastC = c[c.length - 1];
     const biasUp = e9[e9.length - 1] > e21[e21.length - 1] && lastC > vwap[vwap.length - 1];
     const trigUp = e9[e9.length - 1] > e21[e21.length - 1];
     const cOHLC: OHLC = { open: c, high: c, low: c, close: c };
     const a5 = lastFinite(atr(cOHLC, 14)) || lastC * 0.0006;
+    const dir = biasUp ? 1 : -1;
+    const trending = lastFinite(adx(cOHLC, 14)) >= 20;
     rep.scalp = {
       ...rep.scalp,
       intraday: c,
@@ -617,49 +723,65 @@ export async function buildReport(): Promise<Report> {
       setupState: `RSI ${round(lastFinite(rsi(c, 14)))}`,
       triggerState: trigUp ? "Long trigger ✓" : "Short trigger ✓",
       triggerTone: trigUp ? "Long" : "Short",
-      playbook: lastFinite(adx(cOHLC, 14)) >= 20 ? "Trend-Pullback" : "Range-Fade",
+      playbook: trending ? "Trend-Pullback" : "Range-Fade",
+      playbookText: trending
+        ? `${inst.pair} is trending on the 5m with ATR expanding — take with-trend entries off pullbacks to VWAP / EMA21 and skip counter-trend fades.`
+        : `${inst.pair} is ranging on the 5m — fade the edges back to VWAP, keep targets tight and stand aside on the break.`,
       live: {
-        entry: round(lastC, 1),
-        stop: round(lastC - (biasUp ? 1 : -1) * a5 * 1.1, 1),
-        t1: round(lastC + (biasUp ? 1 : -1) * a5 * 1.3, 1),
-        t2: round(lastC + (biasUp ? 1 : -1) * a5 * 2.5, 1),
-        spread: 0.2,
+        entry: px(inst, lastC),
+        stop: px(inst, lastC - dir * a5 * 1.1),
+        t1: px(inst, lastC + dir * a5 * 1.3),
+        t2: px(inst, lastC + dir * a5 * 2.5),
+        spread: round(lastC * 0.00006, Math.max(2, inst.decimals)),
       },
     };
-    // H4 signal from 60m resampled
+    // H4 signal from 60m bars, resampled 4:1
     try {
-      const h1 = await yahooBars("GC=F", "1mo", "60m");
+      const h1 = await yahooBars(inst.yahoo, "1mo", "60m");
       const h4 = groupBars(h1, (_d, i) => String(Math.floor(i / 4)));
-      rep.signals[0] = computeSignal("H4", h4);
+      rep.signals[0] = computeSignal(inst, "H4", h4);
     } catch {
-      /* keep sample H4 */
+      /* keep the existing H4 row */
     }
     sources.push("Yahoo (intraday 5m)");
   } catch {
     notes.push("Intraday feed unavailable — scalping cockpit using sample.");
   }
 
-  // ---- regime read (derived) ----
+  // ---- regime read, expressed in the instrument's own sensitivities --------
   if (live) {
-    const dxyDown = rep.kpi.dxyChgPct < 0;
-    const ryDown = rep.kpi.realYieldChgBp < 0;
-    const long = dxyDown && ryDown;
-    const shortish = !dxyDown && !ryDown;
+    const dxyUp = rep.kpi.dxyChgPct > 0;
+    const ryUp = rep.kpi.realYieldChgBp > 0;
+    // + = supportive for this pair, − = a drag
+    const usdPush = (dxyUp ? 1 : -1) * inst.usdBeta;
+    const yieldPush = (ryUp ? 1 : -1) * inst.yieldBeta;
+    const score = usdPush + yieldPush;
+    const bands = inst.vol?.bands;
+    const volState = rep.kpi.vol == null || !bands ? null : rep.kpi.vol < bands[1] ? "contained" : "elevated";
+    const drivers: string[] = [];
+    if (inst.usdBeta !== 0) drivers.push(`Dollar ${dxyUp ? "firm" : "soft"}`);
+    if (inst.yieldBeta !== 0) drivers.push(`real yields ${ryUp ? "rising" : "easing"}`);
+    if (volState) drivers.push(`${inst.vol!.label.split(" ")[0]} ${volState}`);
     rep.regime = {
-      badge: long ? "Tailwind · Long-friendly" : shortish ? "Headwind · Cautious" : "Mixed · Two-way",
-      tone: long ? "long" : shortish ? "short" : "neutral",
+      badge: score > 0 ? "Tailwind · Long-friendly" : score < 0 ? "Headwind · Cautious" : "Mixed · Two-way",
+      tone: score > 0 ? "long" : score < 0 ? "short" : "neutral",
       text:
-        `Dollar ${dxyDown ? "soft" : "firm"}, real yields ${ryDown ? "easing" : "rising"}, GVZ ${rep.kpi.gvz < 18 ? "contained" : "elevated"}. ` +
-        (long
-          ? "Backdrop favours directional longs with defined risk; fade rallies only into resistance."
-          : shortish
-            ? "Backdrop is a headwind for gold; prefer fades into resistance / stand aside."
-            : "Drivers are mixed — trade levels, keep size modest."),
+        (drivers.length ? drivers.join(", ") + ". " : "") +
+        (score > 0
+          ? `Backdrop favours directional longs in ${inst.pair} with defined risk; fade rallies only into resistance.`
+          : score < 0
+            ? `Backdrop is a headwind for ${inst.pair}; prefer fades into resistance or stand aside.`
+            : `Drivers are mixed for ${inst.pair} — trade levels, keep size modest.`),
     };
   }
 
-  // ---- events ----
-  rep.events = eventCalendar(today);
+  // ---- events, written for this pair's sensitivities ----
+  rep.events = eventCalendar(today, 10, { usdBeta: inst.usdBeta, yieldBeta: inst.yieldBeta });
+
+  if (inst.custom)
+    notes.push(
+      `${inst.pair} is not in the built-in catalog — mapped to Yahoo symbol "${inst.yahoo}" by convention. If the numbers look wrong, the mapping is the first thing to check.`,
+    );
 
   rep.meta = {
     dateRange: fmtRange(today),
@@ -668,8 +790,8 @@ export async function buildReport(): Promise<Report> {
     sources: sources.length ? sources : ["synthetic sample"],
     notes: [
       ...notes,
-      "Event calendar is scheduled/approx (NFP=first Friday, FOMC list) — verify before trading.",
-      "Predictions-vs-actuals is illustrative until a results store is added.",
+      "Event calendar is scheduled/approx (NFP = first Friday, FOMC list) — verify before trading.",
+      "Track record and recent calls are a backtest of the EMA9/21 cross on daily bars, not executed trades.",
     ],
   };
   return rep;

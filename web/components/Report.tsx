@@ -4,9 +4,9 @@ import { useRouter } from "next/navigation";
 import type { Report, Bias } from "@/lib/report";
 import {
   PriceChart,
-  GvzChart,
+  VolChart,
   CotChart,
-  RealYieldChart,
+  DriverChart,
   DeskChart,
   RRGChart,
   CorrChart,
@@ -14,8 +14,8 @@ import {
   ScalpChart,
 } from "./charts";
 import TradingViewWidget from "./TradingViewWidget";
+import PairPicker from "./PairPicker";
 
-const n0 = (v: number) => Math.round(v).toLocaleString();
 const n1 = (v: number) => v.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const sign = (v: number, d = 2) => (v >= 0 ? "+" : "") + v.toFixed(d);
 const cls = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "neu");
@@ -59,14 +59,28 @@ function AutoRefresh() {
 
 export default function ReportView({ data }: { data: Report }) {
   const d = data;
+  const inst = d.instrument;
+  // Every price on the page is formatted at the instrument's own precision.
+  const p = (v: number) =>
+    v.toLocaleString(undefined, { minimumFractionDigits: inst.decimals, maximumFractionDigits: inst.decimals });
+  const tvInterval = inst.klass === "crypto" ? "5" : d.scalp.triggerTF.replace(/[^0-9]/g, "") || "5";
+  const sessTone: Record<string, string> = {
+    quiet: "#8a94a0",
+    active: "var(--bull)",
+    prime: "var(--gold-2)",
+    fading: "var(--neutral)",
+  };
   return (
     <div className="wrap">
       <header className="mast">
         <div>
           <h1>
-            XAU<span>·</span>Desk
+            {inst.pair.slice(0, 3)}<span>·</span>Desk
           </h1>
-          <div className="sub">5-Day Gold Report — XAUUSD</div>
+          <div className="sub">
+            5-Day Report — {inst.pair} · {inst.label}
+          </div>
+          <PairPicker current={inst.id} custom={inst.custom} />
         </div>
         <div className="right">
           <ThemeToggle />
@@ -89,20 +103,22 @@ export default function ReportView({ data }: { data: Report }) {
         <div className="sec-head">
           <span className="sec-num">01</span>
           <h2>Macro Regime</h2>
-          <span className="hint">what&apos;s driving gold — lean long, short, or stand aside?</span>
+          <span className="hint">what&apos;s driving {inst.pair} — lean long, short, or stand aside?</span>
         </div>
 
         <div className="kpis">
           <div className="kpi">
-            <div className="lab">XAUUSD spot</div>
-            <div className="val">{n0(d.kpi.xau)}</div>
-            <div className={`sub ${cls(d.kpi.xauChgPct)}`}>{sign(d.kpi.xauChgPct)}% today</div>
+            <div className="lab">{inst.pair} spot</div>
+            <div className="val">{p(d.kpi.price)}</div>
+            <div className={`sub ${cls(d.kpi.priceChgPct)}`}>{sign(d.kpi.priceChgPct)}% today</div>
           </div>
-          <div className="kpi">
-            <div className="lab">GVZ · gold vol</div>
-            <div className="val neu">{n1(d.kpi.gvz)}</div>
-            <div className="sub">bands 12 / 18 / 24</div>
-          </div>
+          {d.kpi.vol != null && inst.volLabel && (
+            <div className="kpi">
+              <div className="lab">{inst.volLabel}</div>
+              <div className="val neu">{n1(d.kpi.vol)}</div>
+              <div className="sub">bands {(inst.volBands ?? []).join(" / ")}</div>
+            </div>
+          )}
           <div className="kpi">
             <div className="lab">DXY · dollar</div>
             <div className={`val ${cls(-d.kpi.dxyChgPct)}`}>{n1(d.kpi.dxy)}</div>
@@ -121,25 +137,35 @@ export default function ReportView({ data }: { data: Report }) {
         </div>
 
         <div className="chart-title">
-          XAUUSD <span className="m">· last ~40 sessions (last 5 shaded)</span>
+          {inst.pair} <span className="m">· last ~40 sessions (last 5 shaded)</span>
         </div>
-        <PriceChart data={d.price.values} />
+        <PriceChart data={d.price.values} decimals={inst.decimals} />
 
-        <div className="grid2" style={{ marginTop: 18 }}>
-          <div>
-            <div className="chart-title">
-              GVZ <span className="m">· gold vol regime bands 12 / 18 / 24</span>
-            </div>
-            <GvzChart data={d.gvz.values} />
+        {(d.vol || d.cot) && (
+          <div className={d.vol && d.cot ? "grid2" : ""} style={{ marginTop: 18 }}>
+            {d.vol && inst.volLabel && (
+              <div>
+                <div className="chart-title">
+                  {inst.volLabel.split(" ")[0]} <span className="m">· vol regime bands {(inst.volBands ?? []).join(" / ")}</span>
+                </div>
+                <VolChart
+                  data={d.vol.values}
+                  bands={inst.volBands ?? undefined}
+                  range={inst.volRange ?? undefined}
+                />
+              </div>
+            )}
+            {d.cot && (
+              <div>
+                <div className="chart-title">
+                  {inst.cotLabel ?? "CFTC net"} <span className="m">· weekly Δ, thousands of contracts</span>
+                </div>
+                <CotChart data={d.cot} />
+                <div className="cap">Speculative positioning in the underlying futures. Extremes flag crowding / contrarian risk.</div>
+              </div>
+            )}
           </div>
-          <div>
-            <div className="chart-title">
-              CFTC managed-money net <span className="m">· weekly Δ</span> <span className="tag">New for gold</span>
-            </div>
-            <CotChart data={d.cot} />
-            <div className="cap">Speculative positioning — the gold analog to FII futures bars. Extremes flag crowding / contrarian risk.</div>
-          </div>
-        </div>
+        )}
       </section>
 
       {/* ===== 02 SCALPING ===== */}
@@ -180,24 +206,35 @@ export default function ReportView({ data }: { data: Report }) {
         <div className="scalpwrap">
           <div>
             <div className="chart-title">
-              XAUUSD live <span className="m">· TradingView · TICKMILL:XAUUSD · real-time (IST)</span>
+              {inst.pair} live <span className="m">· TradingView · {inst.tv} · real-time (IST)</span>
             </div>
-            <TradingViewWidget symbol="TICKMILL:XAUUSD" interval={d.scalp.triggerTF.replace(/[^0-9]/g, "") || "5"} />
-            <div className="cap">Live TradingView chart (display only). Desk numbers below are computed from Yahoo Finance.</div>
+            <TradingViewWidget symbol={inst.tv} interval={tvInterval} />
+            <div className="cap">
+              Live TradingView chart (display only). Desk numbers below are computed from Yahoo Finance ({inst.yahoo}).
+            </div>
             <div className="chart-title" style={{ marginTop: 12 }}>
-              XAUUSD {d.scalp.triggerTF} <span className="m">· VWAP + EMA9 / EMA21 · session shaded</span>
+              {inst.pair} {d.scalp.triggerTF} <span className="m">· VWAP + EMA9 / EMA21 · session shaded</span>
             </div>
-            <ScalpChart price={d.scalp.intraday} vwap={d.scalp.vwap} ema9={d.scalp.ema9} ema21={d.scalp.ema21} />
+            <ScalpChart
+              price={d.scalp.intraday}
+              vwap={d.scalp.vwap}
+              ema9={d.scalp.ema9}
+              ema21={d.scalp.ema21}
+              decimals={inst.decimals}
+            />
             <div className="chart-title" style={{ marginTop: 10 }}>
-              Best hours to scalp gold <span className="m">· IST (India Standard Time)</span>
+              Best hours to trade {inst.pair} <span className="m">· IST (India Standard Time)</span>
             </div>
             <div className="sessclock">
-              <div style={{ background: "#8a94a0", flex: "2 1 0" }}>Asia 05:30–12:30 · thin</div>
-              <div style={{ background: "var(--bull)", flex: "1.4 1 0" }}>London 12:30–15:30 · active</div>
-              <div style={{ background: "var(--gold-2)", flex: "2 1 0" }}>London–NY 17:30–21:30 · PRIME</div>
-              <div style={{ background: "var(--neutral)", flex: "1.4 1 0" }}>Late NY 21:30–02:30 · fading</div>
+              {inst.sessions.map((sb) => (
+                <div key={sb.label} style={{ background: sessTone[sb.tone], flex: `${sb.flex} 1 0` }}>
+                  {sb.label}
+                </div>
+              ))}
             </div>
-            <div className="cap">All times IST. Concentrate scalps in the London open (12:30 IST) &amp; London–NY overlap (17:30–21:30 IST); Asia chop &amp; rollover eat spread.</div>
+            <div className="cap">
+              All times IST. Concentrate entries in the highlighted windows — thin sessions mean wider spread and chop.
+            </div>
           </div>
           <div>
             <div className="scalpcard">
@@ -206,27 +243,27 @@ export default function ReportView({ data }: { data: Report }) {
               </h4>
               <div className="slrow">
                 <div className="k">Entry</div>
-                <div className="v">{n1(d.scalp.live.entry)}</div>
+                <div className="v">{p(d.scalp.live.entry)}</div>
                 <div className="n">on {d.scalp.triggerTF} trigger</div>
                 <div className="k">Stop</div>
-                <div className="v">{n1(d.scalp.live.stop)}</div>
-                <div className="n">{sign(d.scalp.live.stop - d.scalp.live.entry, 1)}</div>
+                <div className="v">{p(d.scalp.live.stop)}</div>
+                <div className="n">{sign(d.scalp.live.stop - d.scalp.live.entry, inst.decimals)}</div>
                 <div className="k">Target 1</div>
-                <div className="v">{n1(d.scalp.live.t1)}</div>
-                <div className="n">{sign(d.scalp.live.t1 - d.scalp.live.entry, 1)}</div>
+                <div className="v">{p(d.scalp.live.t1)}</div>
+                <div className="n">{sign(d.scalp.live.t1 - d.scalp.live.entry, inst.decimals)}</div>
                 <div className="k">Target 2</div>
-                <div className="v">{n1(d.scalp.live.t2)}</div>
-                <div className="n">{sign(d.scalp.live.t2 - d.scalp.live.entry, 1)}</div>
-                <div className="k">Spread</div>
-                <div className="v">~${d.scalp.live.spread.toFixed(2)}</div>
-                <div className="n">size ≥ 15× spread</div>
+                <div className="v">{p(d.scalp.live.t2)}</div>
+                <div className="n">{sign(d.scalp.live.t2 - d.scalp.live.entry, inst.decimals)}</div>
+                <div className="k">Spread (est.)</div>
+                <div className="v">~{d.scalp.live.spread.toFixed(Math.max(2, inst.decimals))}</div>
+                <div className="n">size ≥ 15× your broker&apos;s spread</div>
               </div>
               <div className="cap" style={{ marginTop: 8 }}>Trail to breakeven at +1R; time-stop 6 bars if T1 not tagged.</div>
             </div>
             <div className="tblcap">Scalper&apos;s rules</div>
             <ul className="checklist">
               <li>Trade only in direction of the {d.scalp.biasTF} bias</li>
-              <li>Enter only in London / NY-overlap hours</li>
+              <li>Enter only in this pair&apos;s active hours (above)</li>
               <li>No new entries ±2 min around CPI / FOMC / NFP</li>
               <li>Min 1.2 : 1 reward-to-risk, fixed $ stop</li>
               <li>Max 3 losers → stop for the day</li>
@@ -240,24 +277,34 @@ export default function ReportView({ data }: { data: Report }) {
       <section className="card">
         <div className="sec-head">
           <span className="sec-num">03</span>
-          <h2>Desk Call — XAUUSD</h2>
+          <h2>Desk Call — {inst.pair}</h2>
           <span className="hint">trend + momentum, volatility, key levels · per timeframe</span>
         </div>
 
         <div className="grid2">
           <div>
             <div className="chart-title" style={{ color: "var(--bull)" }}>
-              XAUUSD <span className="m">· S/R band shaded</span>
+              {inst.pair} <span className="m">· S/R band shaded</span>
             </div>
-            <DeskChart data={d.price.values} sr={[d.signals[1]?.support ?? d.price.values[0], d.signals[1]?.resist ?? d.price.values[0]]} />
+            <DeskChart
+              data={d.price.values}
+              sr={[d.signals[1]?.support ?? d.price.values[0], d.signals[1]?.resist ?? d.price.values[0]]}
+              decimals={inst.decimals}
+            />
           </div>
-          <div>
-            <div className="chart-title">
-              Real yield (inv.) vs Gold <span className="m">· inverse driver</span> <span className="tag">New for gold</span>
+          {d.driverOverlay && (
+            <div>
+              <div className="chart-title">
+                Real yield (inv.) vs {inst.pair} <span className="m">· macro driver</span>
+              </div>
+              <DriverChart price={d.driverOverlay.price} realInv={d.driverOverlay.realInv} label={inst.pair} />
+              <div className="cap">
+                US 10y real yields drive most dollar-priced assets — this pair reads them{" "}
+                {inst.klass === "index" ? "as a discount rate" : "through the dollar"}. Lines moving together means the
+                driver is live; diverging means something else is in charge.
+              </div>
             </div>
-            <RealYieldChart gold={d.realYieldVsGold.gold} realInv={d.realYieldVsGold.realInv} />
-            <div className="cap">Real yields are gold&apos;s dominant fundamental — falling real yields (rising line) pull gold up.</div>
-          </div>
+          )}
         </div>
 
         <div className="tblcap">Signals · trend + momentum, volatility, key levels</div>
@@ -283,9 +330,9 @@ export default function ReportView({ data }: { data: Report }) {
                   <td>{s.momentum}</td>
                   <td>{s.adx}</td>
                   <td>{s.rsi}</td>
-                  <td>±{s.expMove}</td>
-                  <td>{n0(s.support)}</td>
-                  <td>{n0(s.resist)}</td>
+                  <td>±{p(s.expMove)}</td>
+                  <td>{p(s.support)}</td>
+                  <td>{p(s.resist)}</td>
                 </tr>
               ))}
             </tbody>
@@ -307,20 +354,21 @@ export default function ReportView({ data }: { data: Report }) {
       </section>
 
       {/* ===== 04 ROTATION ===== */}
+      {(d.rrg.length > 0 || d.corr.length > 0) && (
       <section className="card">
         <div className="sec-head">
           <span className="sec-num">04</span>
-          <h2>Metals Complex &amp; Intermarket</h2>
-          <span className="tag">Reworked for gold</span>
-          <span className="hint">the gold analog to sector rotation</span>
+          <h2>{inst.peerLabel} &amp; Intermarket</h2>
+          <span className="hint">relative strength &amp; what&apos;s actually correlated right now</span>
         </div>
 
         <div className="grid2">
+          {d.rrg.length > 0 && (
           <div>
             <div className="chart-title">
-              Precious-metals RRG <span className="m">· strength vs gold</span>
+              {inst.peerLabel} RRG <span className="m">· strength vs {inst.pair}</span>
             </div>
-            <RRGChart points={d.rrg} />
+            <RRGChart points={d.rrg} benchmark={inst.pair} />
             <div className="legend">
               <span>
                 <i style={{ background: "var(--bull)" }} />
@@ -340,16 +388,21 @@ export default function ReportView({ data }: { data: Report }) {
               </span>
             </div>
           </div>
+          )}
+          {d.corr.length > 0 && (
           <div>
             <div className="chart-title">
-              XAUUSD 20-day correlation <span className="m">· to key drivers</span> <span className="tag">New for gold</span>
+              {inst.pair} correlation <span className="m">· 3-month daily returns vs key drivers</span>
             </div>
             <CorrChart rows={d.corr} />
-            <div className="cap">What&apos;s actually moving gold now — silver &amp; real yields dominate; dollar inverse still strong.</div>
+            <div className="cap">What&apos;s actually moving {inst.pair} now. Read the top rows first — they dominate.</div>
           </div>
+          )}
         </div>
 
-        <div className="tblcap">Metals complex · ranked by relative strength vs gold</div>
+        {d.rrg.length > 0 && (
+        <>
+        <div className="tblcap">{inst.peerLabel} · ranked by relative strength vs {inst.pair}</div>
         <div className="tbl-wrap">
           <table>
             <thead>
@@ -380,7 +433,10 @@ export default function ReportView({ data }: { data: Report }) {
           </table>
         </div>
         <div className="cap">Leading / Improving quadrants favour longs; Lagging / Weakening favour caution.</div>
+        </>
+        )}
       </section>
+      )}
 
       {/* ===== 05 IDEAS ===== */}
       <section className="card">
@@ -411,10 +467,10 @@ export default function ReportView({ data }: { data: Report }) {
                     <tr key={s.name}>
                       <td>{s.name}</td>
                       <td>{pill(s.bias)}</td>
-                      <td>{n0(s.entry)}</td>
-                      <td>{n0(s.stop)}</td>
-                      <td>{n0(s.t1)}</td>
-                      <td>{n0(s.t2)}</td>
+                      <td>{p(s.entry)}</td>
+                      <td>{p(s.stop)}</td>
+                      <td>{p(s.t1)}</td>
+                      <td>{p(s.t2)}</td>
                       <td>{s.rr.toFixed(1)}</td>
                     </tr>
                   ))}
@@ -422,9 +478,7 @@ export default function ReportView({ data }: { data: Report }) {
               </table>
             </div>
 
-            <div className="tblcap">
-              Key levels <span className="tag">New for gold</span>
-            </div>
+            <div className="tblcap">Key levels</div>
             <div className="tbl-wrap">
               <table>
                 <thead>
@@ -439,7 +493,7 @@ export default function ReportView({ data }: { data: Report }) {
                     <tr key={l.name}>
                       <td>{l.name}</td>
                       <td>{l.type}</td>
-                      <td>{n0(l.price)}</td>
+                      <td>{p(l.price)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -472,9 +526,7 @@ export default function ReportView({ data }: { data: Report }) {
           </div>
 
           <div>
-            <div className="tblcap first">
-              Event risk this week <span className="tag">New for gold</span>
-            </div>
+            <div className="tblcap first">Event risk this week</div>
             <div className="tbl-wrap">
               <table>
                 <thead>
@@ -482,7 +534,7 @@ export default function ReportView({ data }: { data: Report }) {
                     <th>Date</th>
                     <th>Event</th>
                     <th>Impact</th>
-                    <th>Gold watch</th>
+                    <th>{inst.pair} watch</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -504,15 +556,15 @@ export default function ReportView({ data }: { data: Report }) {
                 </tbody>
               </table>
             </div>
-            <div className="cap">Missing from equity templates — but event risk is decisive on a 5-day gold horizon.</div>
+            <div className="cap">US macro prints move every dollar-priced market — the watch column is written for {inst.pair}.</div>
 
-            <div className="tblcap">
-              Seasonality · avg monthly return <span className="tag">New for gold</span>
-            </div>
+            <div className="tblcap">Seasonality · avg monthly return</div>
             <SeasonalityChart data={d.seasonality} month={d.seasonalityMonth} />
-            <div className="cap">Current month highlighted; Aug–Sep &amp; Dec–Jan are gold&apos;s historically strong stretches.</div>
+            <div className="cap">10 years of monthly returns for {inst.pair}; the current month is highlighted.</div>
 
-            <div className="tblcap">Track record · backtested EMA9/21 signal</div>
+            {d.track.length > 0 && (
+            <>
+            <div className="tblcap">Track record · backtested EMA9/21 signal, 6 months of daily bars</div>
             <div className="tbl-wrap">
               <table>
                 <thead>
@@ -537,11 +589,15 @@ export default function ReportView({ data }: { data: Report }) {
                 </tbody>
               </table>
             </div>
+            </>
+            )}
           </div>
         </div>
 
+        {d.predictions.length > 0 && (
+        <>
         <div className="tblcap">
-          Predictions vs actuals · recent calls <span className="tag">illustrative</span>
+          Recent signals vs actuals <span className="m">· last EMA9/21 crosses on {inst.pair} daily</span>
         </div>
         <div className="tbl-wrap">
           <table>
@@ -556,23 +612,26 @@ export default function ReportView({ data }: { data: Report }) {
               </tr>
             </thead>
             <tbody>
-              {d.predictions.map((p, i) => (
+              {d.predictions.map((pr, i) => (
                 <tr key={i}>
-                  <td>{p.date}</td>
-                  <td>{p.call}</td>
-                  <td>{pill(p.bias)}</td>
-                  <td className={p.r1 == null ? "" : cls(p.r1)}>{p.r1 == null ? "—" : sign(p.r1) + "%"}</td>
-                  <td className={p.r5 == null ? "" : cls(p.r5)}>{p.r5 == null ? "—" : sign(p.r5) + "%"}</td>
-                  <td>{p.status}</td>
+                  <td>{pr.date}</td>
+                  <td>{pr.call}</td>
+                  <td>{pill(pr.bias)}</td>
+                  <td className={pr.r1 == null ? "" : cls(pr.r1)}>{pr.r1 == null ? "—" : sign(pr.r1) + "%"}</td>
+                  <td className={pr.r5 == null ? "" : cls(pr.r5)}>{pr.r5 == null ? "—" : sign(pr.r5) + "%"}</td>
+                  <td>{pr.status}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </section>
 
       <div className="foot">
-        XAU·Desk — 5-Day Gold Report. {d.meta.live ? "Live free-data build." : "Sample build."} Not investment advice and not a trade trigger.
+        {inst.pair} desk report · {inst.label}. {d.meta.live ? "Live free-data build." : "Sample build."} Not investment
+        advice and not a trade trigger.
         <br />
         {d.meta.notes.join(" · ")}
       </div>

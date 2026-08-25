@@ -171,3 +171,20 @@ tbody tr:nth-child(even){background:var(--surface-2)}
   section.card{break-inside:avoid;box-shadow:none}
   .mast{box-shadow:none}
 }
+
+/* ---- pair picker ---------------------------------------------------- */
+.pairpick{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.pairpick .pp-lab{font-size:11px;letter-spacing:.9px;text-transform:uppercase;color:var(--muted)}
+.pairpick .pp-select,.pairpick .pp-input{
+  background:transparent;border:1px solid var(--border);color:var(--ink-text);
+  border-radius:7px;padding:5px 8px;font-size:12.5px;font-family:inherit}
+.pairpick .pp-select{min-width:190px;cursor:pointer}
+.pairpick .pp-select:hover,.pairpick .pp-input:focus{border-color:var(--gold)}
+.pairpick .pp-form{display:flex;gap:6px}
+.pairpick .pp-input{width:180px}
+.pairpick .pp-go{background:var(--gold);border:0;color:#12161c;font-weight:700;
+  border-radius:7px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit}
+.pairpick .pp-go:disabled{opacity:.6;cursor:default}
+.pairpick .pp-select:focus-visible,.pairpick .pp-input:focus-visible,.pairpick .pp-go:focus-visible{
+  outline:2px solid var(--gold);outline-offset:2px}
+@media(max-width:640px){.pairpick .pp-input{width:130px}.pairpick .pp-select{min-width:150px}}

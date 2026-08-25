@@ -1,8 +1,8 @@
 {
-  "name": "xau-desk",
+  "name": "desk-report",
   "version": "0.1.0",
   "private": true,
-  "description": "XAU·Desk — 5-Day Gold Report. Next.js dashboard for XAUUSD trading (macro regime, intraday scalping cockpit, intermarket, setups & event risk).",
+  "description": "Multi-pair trading desk report. Next.js dashboard that builds macro regime, intraday scalping cockpit, intermarket rotation, setups & event risk for any selected pair.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

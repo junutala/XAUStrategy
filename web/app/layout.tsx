@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "XAU·Desk — 5-Day Gold Report",
+  title: "Desk — multi-pair trading report",
   description:
-    "XAUUSD trading desk report: macro regime, intraday scalping cockpit, intermarket rotation, setups & event risk.",
+    "Trading desk report for any pair you select: macro regime, intraday scalping cockpit, relative strength, correlations, setups & event risk.",
 };
 
 export default function RootLayout({

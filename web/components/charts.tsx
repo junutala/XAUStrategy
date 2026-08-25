@@ -142,7 +142,18 @@ function lineChart(ctx: CanvasRenderingContext2D, w: number, h: number, C: (n: s
   ctx.fill();
 }
 
-export function PriceChart({ data }: { data: number[] }) {
+// Price axes are formatted from the instrument's own decimals, and padded as a
+// share of the range — so the same component works for EURUSD at 1.0842 and
+// BTCUSD at 92,000.
+const priceFmt = (decimals: number) => (v: number) =>
+  v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+
+function pad(mn: number, mx: number, frac = 0.06): [number, number] {
+  const sp = (mx - mn) || Math.abs(mx) * 0.01 || 1;
+  return [mn - sp * frac, mx + sp * frac];
+}
+
+export function PriceChart({ data, decimals = 0 }: { data: number[]; decimals?: number }) {
   const [mn, mx] = minmax(data);
   return (
     <Chart
@@ -152,27 +163,36 @@ export function PriceChart({ data }: { data: number[] }) {
           color: C("--gold"),
           fill: C("--gold-soft"),
           shadeLast: 5,
-          range: [mn - 8, mx + 8],
-          yfmt: (v) => Math.round(v).toLocaleString(),
+          range: pad(mn, mx),
+          yfmt: priceFmt(decimals),
         })
       }
     />
   );
 }
 
-export function GvzChart({ data }: { data: number[] }) {
+export function VolChart({
+  data,
+  bands = [12, 18, 24],
+  range,
+}: {
+  data: number[];
+  bands?: [number, number, number];
+  range?: [number, number];
+}) {
+  const [mn, mx] = minmax(data);
+  const r: [number, number] = range ?? [Math.min(mn, bands[0]) * 0.95, Math.max(mx, bands[2]) * 1.05];
   return (
     <Chart
       height={200}
-      draw={(ctx, w, h, C) =>
-        lineChart(ctx, w, h, C, data, { color: C("--neutral"), bands: [12, 18, 24], range: [10, 26] })
-      }
+      draw={(ctx, w, h, C) => lineChart(ctx, w, h, C, data, { color: C("--neutral"), bands, range: r })}
     />
   );
 }
 
-export function DeskChart({ data, sr }: { data: number[]; sr: [number, number] }) {
+export function DeskChart({ data, sr, decimals = 0 }: { data: number[]; sr: [number, number]; decimals?: number }) {
   const [mn, mx] = minmax(data);
+  const [lo, hi] = pad(Math.min(mn, sr[0]), Math.max(mx, sr[1]), 0.08);
   return (
     <Chart
       height={210}
@@ -181,8 +201,8 @@ export function DeskChart({ data, sr }: { data: number[]; sr: [number, number] }
           color: C("--bull"),
           fill: C("--bull-soft"),
           srBand: sr,
-          range: [Math.min(mn, sr[0]) - 14, Math.max(mx, sr[1]) + 14],
-          yfmt: (v) => Math.round(v).toLocaleString(),
+          range: [lo, hi],
+          yfmt: priceFmt(decimals),
         })
       }
     />
@@ -221,14 +241,22 @@ export function CotChart({ data }: { data: number[] }) {
   );
 }
 
-export function RealYieldChart({ gold, realInv }: { gold: number[]; realInv: number[] }) {
+export function DriverChart({
+  price,
+  realInv,
+  label = "Price",
+}: {
+  price: number[];
+  realInv: number[];
+  label?: string;
+}) {
   return (
     <Chart
       height={210}
       draw={(ctx, w, h, C) => {
         const padL = 44, padR = 10, padT = 8, padB = 18, x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
-        const N = Math.min(gold.length, realInv.length);
-        const g = gold.slice(gold.length - N);
+        const N = Math.min(price.length, realInv.length);
+        const g = price.slice(price.length - N);
         const r = realInv.slice(realInv.length - N);
         const gm = minmax(g), rm = minmax(r);
         const px = (i: number) => x0 + (i / (N - 1)) * (x1 - x0);
@@ -258,16 +286,17 @@ export function RealYieldChart({ gold, realInv }: { gold: number[]; realInv: num
         ctx.textBaseline = "top";
         ctx.font = "10px " + SANS;
         ctx.fillStyle = C("--gold");
-        ctx.fillText("■ Gold", x0 + 4, y0 + 4);
+        ctx.fillText("■ " + label, x0 + 4, y0 + 4);
+        const off = 14 + ctx.measureText("■ " + label).width;
         ctx.fillStyle = C("--blue");
-        ctx.fillText("■ Real yield (inverted)", x0 + 52, y0 + 4);
+        ctx.fillText("■ Real yield (inverted)", x0 + off, y0 + 4);
       }}
     />
   );
 }
 
 interface RRGP { rank: number; name: string; x: number; y: number; quadrant: string }
-export function RRGChart({ points }: { points: RRGP[] }) {
+export function RRGChart({ points, benchmark = "the benchmark" }: { points: RRGP[]; benchmark?: string }) {
   const qcol = (q: string, C: (n: string) => string) =>
     q === "Leading" ? C("--bull") : q === "Improving" ? C("--blue") : q === "Weakening" ? C("--neutral") : C("--bear");
   return (
@@ -312,7 +341,7 @@ export function RRGChart({ points }: { points: RRGP[] }) {
         ctx.fillText("Weakening", x1 - 4, y1 - 3);
         ctx.textAlign = "center";
         ctx.fillStyle = C("--faint");
-        ctx.fillText("RS-Ratio  (>100 = outperforming gold)", (x0 + x1) / 2, h - 2);
+        ctx.fillText(`RS-Ratio  (>100 = outperforming ${benchmark})`, (x0 + x1) / 2, h - 2);
         ctx.beginPath();
         ctx.arc(cx, cy, 3, 0, 7);
         ctx.fill();
@@ -406,7 +435,19 @@ export function SeasonalityChart({ data, month }: { data: number[]; month: numbe
   );
 }
 
-export function ScalpChart({ price, vwap, ema9, ema21 }: { price: number[]; vwap: number[]; ema9: number[]; ema21: number[] }) {
+export function ScalpChart({
+  price,
+  vwap,
+  ema9,
+  ema21,
+  decimals = 1,
+}: {
+  price: number[];
+  vwap: number[];
+  ema9: number[];
+  ema21: number[];
+  decimals?: number;
+}) {
   return (
     <Chart
       height={230}
@@ -415,7 +456,8 @@ export function ScalpChart({ price, vwap, ema9, ema21 }: { price: number[]; vwap
         const M = price.length;
         const all = price.concat(vwap, ema9, ema21);
         const [mn0, mx0] = minmax(all);
-        const mn = mn0 - 0.8, mx = mx0 + 0.8, sp = mx - mn || 1;
+        const [mn, mx] = pad(mn0, mx0, 0.08);
+        const sp = mx - mn || 1;
         const px = (i: number) => x0 + (i / (M - 1)) * (x1 - x0);
         const py = (v: number) => y1 - ((v - mn) / sp) * (y1 - y0);
         const xs = px(Math.floor(M * 0.62));
@@ -432,7 +474,7 @@ export function ScalpChart({ price, vwap, ema9, ema21 }: { price: number[]; vwap
           ctx.lineTo(x1, yy);
           ctx.stroke();
           ctx.fillStyle = C("--faint");
-          ctx.fillText(yv.toFixed(1), x0 - 6, yy);
+          ctx.fillText(yv.toFixed(decimals), x0 - 6, yy);
         }
         const line = (arr: number[], col: string, lw: number, dash: number[] = []) => {
           ctx.setLineDash(dash);

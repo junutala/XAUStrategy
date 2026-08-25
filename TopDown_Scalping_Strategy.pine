@@ -1,7 +1,10 @@
 //@version=5
 // =====================================================================
-//  XAU Scalping Strategy — Top-Down 1m / 5m / 10m
-//  For XAUUSD (spot gold). Designed to run on the 1-minute chart.
+//  Scalping Strategy — Top-Down 1m / 5m / 10m
+//  Symbol-agnostic: every calculation uses syminfo.tickerid and ATR, so the
+//  script trades whatever pair the chart is on (XAUUSD, EURUSD, BTCUSD, NAS100
+//  ...). Designed to run on the 1-minute chart. Check the session window below —
+//  the default suits London/NY FX & metals hours, not 24/7 crypto.
 //
 //  Framework (mirrors the "Intraday Scalping Cockpit" in the desk report):
 //    - 10m (or 15m) = BIAS filter : EMA20 vs EMA50 + VWAP + structure
@@ -15,7 +18,7 @@
 //  then create an alert on "Any alert() function call" to forward-test /
 //  webhook. Not financial advice — parameters are a starting point to test.
 // =====================================================================
-strategy("XAU Scalping — Top-Down 1/5/10m",
+strategy("Top-Down Scalper — 1/5/10m (any pair)",
      overlay              = true,
      initial_capital      = 10000,
      default_qty_type     = strategy.percent_of_equity,
@@ -32,7 +35,7 @@ strategy("XAU Scalping — Top-Down 1/5/10m",
 //  INPUTS
 // ---------------------------------------------------------------------
 grpTF   = "Timeframes"
-biasTF  = input.timeframe("10", "Bias timeframe (10m or 15m)", group = grpTF, tooltip = "Higher timeframe that sets directional bias. 10m as requested; 15m is the more common gold-scalping default.")
+biasTF  = input.timeframe("10", "Bias timeframe (10m or 15m)", group = grpTF, tooltip = "Higher timeframe that sets directional bias. 10m as requested; 15m is the more common scalping default.")
 setupTF = input.timeframe("5",  "Setup timeframe",             group = grpTF)
 // Trigger timeframe = the chart itself (run this on the 1-minute chart)
 
@@ -62,7 +65,7 @@ timeBars = input.int(6,     "Time-stop bars",          minval = 1,   group = grp
 
 grpSESS = "Session & News filters"
 useSess  = input.bool(true, "Restrict to trading session", group = grpSESS)
-sess     = input.session("0700-1600", "Session (exchange time)", group = grpSESS, tooltip = "Concentrate on London open + London-NY overlap. Default 07:00-16:00. Set your chart timezone to London/UTC for gold.")
+sess     = input.session("0700-1600", "Session (exchange time)", group = grpSESS, tooltip = "Concentrate on the pair's liquid hours. Default 07:00-16:00 (London open + London-NY overlap) suits FX & metals; widen it for crypto and use cash hours for index CFDs.")
 useDayFlat = input.bool(true, "Flatten at session end", group = grpSESS)
 newsBlackout = input.bool(false, "Manual news blackout (no new entries)", group = grpSESS, tooltip = "Toggle on around CPI / FOMC / NFP to stop new entries.")
 maxTrades = input.int(6, "Max entries per day (0 = no cap)", minval = 0, group = grpSESS)
@@ -217,15 +220,15 @@ if barstate.islast
 //  ALERTS
 // ---------------------------------------------------------------------
 if longSignal
-    alert("🟢 XAU LONG scalp trigger @ " + str.tostring(close) +
+    alert("🟢 " + syminfo.ticker + " LONG scalp trigger @ " + str.tostring(close) +
          "  stop " + str.tostring(stopPrice, "#.##") +
          "  T1 "  + str.tostring(t1Price,  "#.##") +
          "  T2 "  + str.tostring(t2Price,  "#.##"), alert.freq_once_per_bar_close)
 if shortSignal
-    alert("🔴 XAU SHORT scalp trigger @ " + str.tostring(close) +
+    alert("🔴 " + syminfo.ticker + " SHORT scalp trigger @ " + str.tostring(close) +
          "  stop " + str.tostring(stopPrice, "#.##") +
          "  T1 "  + str.tostring(t1Price,  "#.##") +
          "  T2 "  + str.tostring(t2Price,  "#.##"), alert.freq_once_per_bar_close)
 
-alertcondition(longSignal,  "XAU Long trigger",  "XAU long scalp trigger")
-alertcondition(shortSignal, "XAU Short trigger", "XAU short scalp trigger")
+alertcondition(longSignal,  "Long trigger",  "Long scalp trigger on {{ticker}} @ {{close}}")
+alertcondition(shortSignal, "Short trigger", "Short scalp trigger on {{ticker}} @ {{close}}")
