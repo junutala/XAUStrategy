@@ -66,6 +66,25 @@ showRangeLines = input.bool(
      "Plot Range High / Low / Mid",
      group = "Price Range")
 
+// Deliberately NOT the EMA colours. The Mid EMA is red by
+// default, and a red range line next to it is impossible to
+// tell apart - which is exactly how a moving average gets
+// mistaken for a level.
+rangeHighColor = input.color(
+     color.orange,
+     "Range High Color",
+     group = "Price Range")
+
+rangeLowColor = input.color(
+     color.teal,
+     "Range Low Color",
+     group = "Price Range")
+
+rangeMidColor = input.color(
+     color.gray,
+     "Range Mid Color",
+     group = "Price Range")
+
 //---- confidence engine ----
 
 confidenceLookback = input.int(
@@ -204,25 +223,29 @@ rangeZoneColor =
      positionInRange <= 20 ? color.green :
      color.orange
 
+// Stepline, not a smooth line: these are rolling extremes
+// that hold flat and jump, so they should not look like the
+// EMAs. Between the shape and the colours above, a level can
+// no longer be confused for a moving average.
 plot(
      showRangeLines ? rangeHigh : na,
      "Range High",
-     color=color.new(color.red, 30),
-     style=plot.style_linebr,
-     linewidth=1)
+     color=color.new(rangeHighColor, 20),
+     style=plot.style_stepline,
+     linewidth=2)
 
 plot(
      showRangeLines ? rangeLow : na,
      "Range Low",
-     color=color.new(color.green, 30),
-     style=plot.style_linebr,
-     linewidth=1)
+     color=color.new(rangeLowColor, 20),
+     style=plot.style_stepline,
+     linewidth=2)
 
 plot(
      showRangeLines ? rangeMid : na,
      "Range Mid",
-     color=color.new(color.gray, 50),
-     style=plot.style_linebr,
+     color=color.new(rangeMidColor, 55),
+     style=plot.style_stepline,
      linewidth=1)
 
 //=====================================================
