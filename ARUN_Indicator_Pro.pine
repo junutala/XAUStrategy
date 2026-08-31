@@ -170,9 +170,13 @@ mtfTF3 = input.timeframe("10", "MTF Timeframe 3")
 // EMA COLORS
 //=====================================================
 
-fastColor = input.color(color.lime, "Fast EMA Color")
-midColor = input.color(color.red, "Mid EMA Color")
-slowColor = input.color(color.blue, "Slow EMA Color")
+// Fast = black, Mid = blue, Slow = red. The slowest line gets
+// the loudest colour on purpose: the Slow EMA is the one the
+// entry conditions are judged against, so it should be the
+// one you can pick out without thinking.
+fastColor = input.color(color.black, "Fast EMA Color")
+midColor = input.color(color.blue, "Mid EMA Color")
+slowColor = input.color(color.red, "Slow EMA Color")
 
 //=====================================================
 // EMAs
