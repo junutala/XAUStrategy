@@ -126,6 +126,15 @@ analysisStartDate = input.time(
 showSignals = input.bool(true, "Show BUY/SELL Signals")
 showEntryPrice = input.bool(false, "Show Entry Price")
 
+showSignalDebug = input.bool(
+     false,
+     "Debug: label each signal with the values that fired it",
+     tooltip = "Prints the exact numbers the condition was evaluated on - the " +
+               "bar's high/low, the Slow EMA, and the Fast/Mid pair that crossed. " +
+               "If a label ever shows a signal whose candle is NOT on the correct " +
+               "side of the Slow EMA under the current Candle Side mode, that is a " +
+               "genuine bug rather than a reading error.")
+
 //=====================================================
 // SIGNAL RULES
 //
@@ -1429,6 +1438,44 @@ plotshape(
 //=====================================================
 // OPTIONAL ENTRY PRICE
 //=====================================================
+
+//=====================================================
+// SIGNAL DEBUG LABELS
+//
+// The condition that fired, written out in numbers, so a
+// suspect signal can be settled by reading rather than by
+// eyeballing pixels.
+//=====================================================
+
+if showSignalDebug and newBuySignal
+    label.new(
+         bar_index,
+         low,
+         "BUY  " + candleSideMode +
+         "\nlow " + str.tostring(low, format.mintick) +
+         "  >  Slow " + str.tostring(emaS, format.mintick) +
+         "\nclose " + str.tostring(close, format.mintick) +
+         "\nFast " + str.tostring(emaF, format.mintick) +
+         "  x  Mid " + str.tostring(emaM, format.mintick),
+         style=label.style_label_up,
+         color=color.new(color.green, 20),
+         textcolor=color.white,
+         size=size.small)
+
+if showSignalDebug and newSellSignal
+    label.new(
+         bar_index,
+         high,
+         "SELL  " + candleSideMode +
+         "\nhigh " + str.tostring(high, format.mintick) +
+         "  <  Slow " + str.tostring(emaS, format.mintick) +
+         "\nclose " + str.tostring(close, format.mintick) +
+         "\nFast " + str.tostring(emaF, format.mintick) +
+         "  x  Mid " + str.tostring(emaM, format.mintick),
+         style=label.style_label_down,
+         color=color.new(color.red, 20),
+         textcolor=color.white,
+         size=size.small)
 
 if showEntryPrice and newBuySignal
     label.new(
