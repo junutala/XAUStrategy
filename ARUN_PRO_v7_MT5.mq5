@@ -203,10 +203,10 @@ bool PanelCreate(int x,int y,int w,int h,int headerH)
    int op=InpDashOpacity;
    if(op<0)   op=0;
    if(op>100) op=100;
-   int alpha=(int)MathRound(255.0*op/100.0);
+   uchar alpha=(uchar)MathRound(255.0*op/100.0);
    // Keep the frame and the title bar readable even at a very low body opacity.
-   int borderAlpha=MathMax(alpha,120);
-   int headerAlpha=MathMax(alpha,170);
+   uchar borderAlpha=(uchar)MathMax((int)alpha,120);
+   uchar headerAlpha=(uchar)MathMax((int)alpha,170);
 
    string name=PREFIX+"PANEL";
    if(dashCanvasReady && (dashCanvasW!=w || dashCanvasH!=h || ObjectFind(0,name)<0))
