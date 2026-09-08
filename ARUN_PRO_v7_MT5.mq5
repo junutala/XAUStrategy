@@ -69,6 +69,7 @@ input bool     InpShowDashboard        = true;
 input int      InpDashX               = 330;
 input int      InpDashY               = 35;
 input int      InpDashFontSize        = 9;
+input bool     InpDashShowPanel       = false;  // draw the background box / title bar
 input bool     InpDashTransparent     = true;   // see candles through the panel
 input int      InpDashOpacity         = 25;     // 0 = invisible panel, 100 = solid
 input color    InpDashBgColor         = clrWhite;
@@ -186,6 +187,16 @@ void RectCreate(string name,int x,int y,int w,int h,color bg,color border)
    ObjectSetInteger(0,name,OBJPROP_BORDER_COLOR,border);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+}
+void PanelDestroy()
+{
+   if(dashCanvasReady)
+   {
+      DashCanvas.Destroy();
+      dashCanvasReady=false; dashCanvasW=0; dashCanvasH=0;
+   }
+   ObjectDelete(0,PREFIX+"BG");
+   ObjectDelete(0,PREFIX+"HDR");
 }
 void DeleteDashboardTexts()
 {
@@ -465,22 +476,30 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
 
    double target=(InpTargetMode==TARGET_ATR_MULTIPLE ? InpTargetAtrMult*atr : InpTargetPoints);
 
-   // Compact panel: title + 9 essential rows.
+   // Compact panel: title + 9 essential rows. Without the background box the
+   // rows simply float over the candles, and the title is one more text line.
    int rows=10;
    int panelW=320, panelH=rows*20+38, headerH=25;
-   bool drawn=false;
-   if(InpDashTransparent) drawn=PanelCreate(InpDashX,InpDashY,panelW,panelH,headerH);
-   if(!drawn)
+   bool headerBar=false;
+   if(InpDashShowPanel)
    {
-      RectCreate(PREFIX+"BG",InpDashX,InpDashY,panelW,panelH,InpDashBgColor,InpDashBorderColor);
-      RectCreate(PREFIX+"HDR",InpDashX,InpDashY,panelW,headerH,InpDashHeaderColor,InpDashBorderColor);
+      if(InpDashTransparent) headerBar=PanelCreate(InpDashX,InpDashY,panelW,panelH,headerH);
+      if(headerBar)
+      {
+         ObjectDelete(0,PREFIX+"BG");
+         ObjectDelete(0,PREFIX+"HDR");
+      }
+      else
+      {
+         RectCreate(PREFIX+"BG",InpDashX,InpDashY,panelW,panelH,InpDashBgColor,InpDashBorderColor);
+         RectCreate(PREFIX+"HDR",InpDashX,InpDashY,panelW,headerH,InpDashHeaderColor,InpDashBorderColor);
+         headerBar=true;
+      }
    }
-   else
-   {
-      ObjectDelete(0,PREFIX+"BG");
-      ObjectDelete(0,PREFIX+"HDR");
-   }
-   LabelCreate(PREFIX+"TITLE","ARUN PRO v7",InpDashX+20,InpDashY+4,clrWhite,11,true);
+   else PanelDestroy();
+
+   LabelCreate(PREFIX+"TITLE","ARUN PRO v7",InpDashX+185,InpDashY+4,
+               headerBar?clrWhite:InpDashTextColor,11,true);
 
    int r=0;
    DashRow(r,"TREND",trend,bull?clrGreen:bear?clrRed:InpDashTextColor,true);
