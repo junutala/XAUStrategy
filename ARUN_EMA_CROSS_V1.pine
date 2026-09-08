@@ -1,0 +1,212 @@
+//@version=5
+// =====================================================================
+//  ARUN EMA CROSS V1  -  TradingView port of the MT5 indicator
+//
+//  Two stage EMA cross engine:
+//    Stage 1 : Fast crosses Mid   -> setup is armed, status shows WAIT
+//    Stage 2 : Fast crosses Slow  -> BUY / SELL signal
+//
+//  Either cross may come first, but both must happen inside the
+//  configured window of candles (default 5) and point the same way.
+//  An opposite cross of the same pair cancels the pending leg, and a
+//  completed sequence is consumed so the next signal needs a fresh pair.
+// =====================================================================
+indicator("ARUN EMA CROSS V1", shorttitle="ARUN X V1", overlay=true)
+
+// ---------------------------------------------------------------------
+//  Inputs
+// ---------------------------------------------------------------------
+gEma = "EMAs"
+fastLen = input.int(7,  "Fast EMA",   minval=1, group=gEma)
+midLen  = input.int(21, "Mid EMA",    minval=1, group=gEma)
+slowLen = input.int(50, "Slow EMA",   minval=1, group=gEma)
+src     = input.source(close, "Source", group=gEma)
+
+gSeq = "Cross sequence"
+maxBars   = input.int(5, "Max candles between the two crosses", minval=0, maxval=100, group=gSeq,
+     tooltip="Stage 1 and stage 2 must both happen inside this many candles, in either order.")
+alertOnClose = input.bool(true, "Alert on closed candles only", group=gSeq,
+     tooltip="Shapes on the forming candle can still change until it closes.")
+
+gDisp = "Display"
+showSignals   = input.bool(true,  "Show BUY / SELL markers", group=gDisp)
+showLabels    = input.bool(false, "Label the markers with BUY / SELL", group=gDisp)
+showWaitMark  = input.bool(false, "Mark stage 1 (WAIT) on the chart", group=gDisp)
+fastCol       = input.color(color.lime, "Fast", inline="c", group=gDisp)
+midCol        = input.color(color.red,  "Mid",  inline="c", group=gDisp)
+slowCol       = input.color(color.blue, "Slow", inline="c", group=gDisp)
+
+gDash = "Dashboard"
+showDash  = input.bool(true, "Show dashboard", group=gDash)
+dashPos   = input.string("Top Right", "Position", options=["Top Right","Top Left","Middle Right","Middle Left","Bottom Right","Bottom Left"], group=gDash)
+dashSize  = input.string("Normal", "Text size", options=["Tiny","Small","Normal","Large"], group=gDash)
+dashText  = input.color(color.black, "Text colour", group=gDash,
+     tooltip="Use white on a dark chart theme.")
+dashBgOn  = input.bool(false, "Draw a background behind the dashboard", group=gDash)
+dashBg    = input.color(color.new(color.white, 80), "Background", group=gDash)
+
+// ---------------------------------------------------------------------
+//  EMAs
+// ---------------------------------------------------------------------
+emaFast = ta.ema(src, fastLen)
+emaMid  = ta.ema(src, midLen)
+emaSlow = ta.ema(src, slowLen)
+
+plot(emaFast, "Fast EMA", color=fastCol, linewidth=2)
+plot(emaMid,  "Mid EMA",  color=midCol,  linewidth=2)
+plot(emaSlow, "Slow EMA", color=slowCol, linewidth=2)
+
+// ---------------------------------------------------------------------
+//  The two stages
+// ---------------------------------------------------------------------
+fmUp = ta.crossover(emaFast, emaMid)
+fmDn = ta.crossunder(emaFast, emaMid)
+fsUp = ta.crossover(emaFast, emaSlow)
+fsDn = ta.crossunder(emaFast, emaSlow)
+
+// Bar index each leg happened on, or na when there is no pending leg.
+var int bullFM = na
+var int bullFS = na
+var int bearFM = na
+var int bearFS = na
+
+// A leg only stays valid for maxBars candles.
+if not na(bullFM) and bar_index - bullFM > maxBars
+    bullFM := na
+if not na(bullFS) and bar_index - bullFS > maxBars
+    bullFS := na
+if not na(bearFM) and bar_index - bearFM > maxBars
+    bearFM := na
+if not na(bearFS) and bar_index - bearFS > maxBars
+    bearFS := na
+
+// A cross the other way cancels the pending leg of the same pair.
+if fmUp
+    bullFM := bar_index
+    bearFM := na
+if fmDn
+    bearFM := bar_index
+    bullFM := na
+if fsUp
+    bullFS := bar_index
+    bearFS := na
+if fsDn
+    bearFS := bar_index
+    bullFS := na
+
+buySignal  = not na(bullFM) and not na(bullFS) and math.abs(bullFM - bullFS) <= maxBars
+sellSignal = not na(bearFM) and not na(bearFS) and math.abs(bearFM - bearFS) <= maxBars
+
+// The sequence is consumed, a fresh pair of crosses is needed next time.
+if buySignal
+    bullFM := na
+    bullFS := na
+if sellSignal
+    bearFM := na
+    bearFS := na
+
+// Stage 1 armed the setup on this bar and stage 2 has not arrived yet.
+armedUp   = fmUp and na(bullFS) and not buySignal
+armedDown = fmDn and na(bearFS) and not sellSignal
+
+// ---------------------------------------------------------------------
+//  Last signal, for the dashboard
+// ---------------------------------------------------------------------
+var int   lastDir   = 0
+var float lastPrice = na
+var int   lastBar   = na
+if buySignal or sellSignal
+    lastDir   := buySignal ? 1 : -1
+    lastPrice := close
+    lastBar   := bar_index
+
+// ---------------------------------------------------------------------
+//  Chart markers
+// ---------------------------------------------------------------------
+plotshape(showSignals and not showLabels and buySignal,  title="BUY", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(showSignals and not showLabels and sellSignal, title="SELL", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+plotshape(showSignals and showLabels and buySignal,  title="BUY labelled", style=shape.labelup,
+     location=location.belowbar, color=color.new(color.lime, 0), size=size.small,
+     text="BUY", textcolor=color.black)
+plotshape(showSignals and showLabels and sellSignal, title="SELL labelled", style=shape.labeldown,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.small,
+     text="SELL", textcolor=color.white)
+plotshape(showWaitMark and armedUp,   title="WAIT up",   style=shape.circle,
+     location=location.belowbar, color=color.new(color.orange, 0), size=size.tiny)
+plotshape(showWaitMark and armedDown, title="WAIT down", style=shape.circle,
+     location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny)
+
+// ---------------------------------------------------------------------
+//  Alerts
+// ---------------------------------------------------------------------
+canFire = not alertOnClose or barstate.isconfirmed
+
+alertcondition(buySignal,  "ARUN EMA CROSS - BUY",  "ARUN EMA CROSS BUY on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(sellSignal, "ARUN EMA CROSS - SELL", "ARUN EMA CROSS SELL on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(armedUp or armedDown, "ARUN EMA CROSS - WAIT (stage 1)", "ARUN EMA CROSS stage 1 armed on {{ticker}} {{interval}}")
+
+if buySignal and canFire
+    alert("ARUN EMA CROSS BUY on " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if sellSignal and canFire
+    alert("ARUN EMA CROSS SELL on " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if (armedUp or armedDown) and canFire
+    alert("ARUN EMA CROSS stage 1 armed (" + (armedUp ? "UP" : "DOWN") + ") on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+
+// ---------------------------------------------------------------------
+//  Dashboard
+// ---------------------------------------------------------------------
+barsAgoText(b) =>
+    b == 0 ? "this bar" : b == 1 ? "1 bar ago" : str.tostring(b) + " bars ago"
+
+legText(legBar, dir) =>
+    na(legBar) ? "-" : (dir > 0 ? "UP  " : "DN  ") + barsAgoText(bar_index - legBar)
+
+fmBar = not na(bullFM) ? bullFM : bearFM
+fmDir = not na(bullFM) ? 1 : not na(bearFM) ? -1 : 0
+fsBar = not na(bullFS) ? bullFS : bearFS
+fsDir = not na(bullFS) ? 1 : not na(bearFS) ? -1 : 0
+
+bullPending = not na(bullFM) or not na(bullFS)
+bearPending = not na(bearFM) or not na(bearFS)
+pendingDir  = bullPending and bearPending ? 0 : bullPending ? 1 : bearPending ? -1 : 0
+
+isBull = emaFast > emaMid and emaMid > emaSlow
+isBear = emaFast < emaMid and emaMid < emaSlow
+trendTxt = isBull ? "BULLISH" : isBear ? "BEARISH" : "MIXED"
+trendCol = isBull ? color.green : isBear ? color.red : color.orange
+
+statusTxt = buySignal ? "BUY" : sellSignal ? "SELL" : pendingDir > 0 ? "WAIT (UP)" : pendingDir < 0 ? "WAIT (DOWN)" : "IDLE"
+statusCol = buySignal ? color.green : sellSignal ? color.red : pendingDir != 0 ? color.orange : color.gray
+
+pendingBar  = na(fmBar) ? fsBar : fmBar
+barsLeft    = maxBars - (bar_index - pendingBar)
+windowTxt   = not buySignal and not sellSignal and pendingDir != 0 and not na(pendingBar) ? str.tostring(math.max(barsLeft, 0)) + " of " + str.tostring(maxBars) + " bars left" : "-"
+windowCol   = windowTxt == "-" ? color.gray : barsLeft > 0 ? color.orange : color.red
+
+lastTxt = lastDir == 0 ? "NONE" : (lastDir > 0 ? "BUY  " : "SELL  ") + str.tostring(lastPrice, format.mintick) + "  (" + barsAgoText(bar_index - lastBar) + ")"
+lastCol = lastDir == 0 ? color.gray : lastDir > 0 ? color.green : color.red
+
+dashPosition = dashPos == "Top Left" ? position.top_left : dashPos == "Middle Right" ? position.middle_right : dashPos == "Middle Left" ? position.middle_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+dashTextSize = dashSize == "Tiny" ? size.tiny : dashSize == "Small" ? size.small : dashSize == "Large" ? size.large : size.normal
+cellBg       = dashBgOn ? dashBg : color.new(color.white, 100)
+
+var table dash = table.new(position.top_right, 2, 9, border_width=0)
+
+row(r, key, value, valCol) =>
+    table.cell(dash, 0, r, key,   text_color=dashText, text_size=dashTextSize, text_halign=text.align_left,  bgcolor=cellBg)
+    table.cell(dash, 1, r, value, text_color=valCol,   text_size=dashTextSize, text_halign=text.align_right, bgcolor=cellBg)
+
+if showDash and barstate.islast
+    table.set_position(dash, dashPosition)
+    table.cell(dash, 0, 0, "ARUN EMA CROSS V1", text_color=dashText, text_size=dashTextSize, text_halign=text.align_left, bgcolor=cellBg)
+    table.cell(dash, 1, 0, "", bgcolor=cellBg)
+    row(1, "TREND",              trendTxt,  trendCol)
+    row(2, "STATUS",             statusTxt, statusCol)
+    row(3, "STAGE 1  FAST/MID",  legText(fmBar, fmDir), na(fmBar) ? color.gray : fmDir > 0 ? color.green : color.red)
+    row(4, "STAGE 2  FAST/SLOW", legText(fsBar, fsDir), na(fsBar) ? color.gray : fsDir > 0 ? color.green : color.red)
+    row(5, "WINDOW",             windowTxt, windowCol)
+    row(6, "LAST SIGNAL",        lastTxt,   lastCol)
+    row(7, "EMAS",               str.tostring(fastLen) + " / " + str.tostring(midLen) + " / " + str.tostring(slowLen), dashText)
+    row(8, "CHART",              timeframe.period, dashText)
