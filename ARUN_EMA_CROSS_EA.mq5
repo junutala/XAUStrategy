@@ -16,7 +16,10 @@
 //| EXIT                                                             |
 //|   Take profit  : see ENUM_TP_MODE - default is the average CANDLE |
 //|                  RANGE of the N candles before the cross.         |
-//|   Stop loss    : see ENUM_SL_MODE - default ATR multiple.         |
+//|   Stop loss    : see ENUM_SL_MODE - default is the SAME average,  |
+//|                  x InpSLAvgMult, so reward-to-risk is a number    |
+//|                  you choose instead of two volatility windows     |
+//|                  disagreeing with each other.                     |
 //|   Optional breakeven, ATR trail, time stop, opposite-signal exit. |
 //|                                                                  |
 //| ON THE TWO READINGS OF THE SPEC                                   |
@@ -66,7 +69,8 @@ enum ENUM_SL_MODE
    SL_ATR      = 0,    // ATR x multiplier
    SL_SLOW_EMA = 1,    // the Slow EMA, plus a buffer
    SL_SWING    = 2,    // recent swing low / high, plus a buffer
-   SL_FIXED    = 3     // fixed points
+   SL_FIXED    = 3,    // fixed points
+   SL_AVG_MOVE = 4     // the SAME average movement the target uses, x multiplier
 };
 
 //--- position sizing
@@ -96,7 +100,16 @@ input double InpTPAtrMult          = 1.5;      // used only by TP_ATR_MULT
 input double InpTPMinAtrMult       = 0.30;     // reject targets smaller than this x ATR
 
 //=== Stop loss ======================================================
-input ENUM_SL_MODE InpSLMode       = SL_ATR;
+//  SL_AVG_MOVE is the default deliberately. Sizing the stop from ATR
+//  while the target comes from the 5 candles before the cross pits two
+//  different volatility windows against each other, and those candles
+//  are usually the quiet ones - a cross tends to follow a consolidation.
+//  A backtest of the ATR default came out at 1.84 average target against
+//  2.29 average stop: a 0.81 payoff baked in before the entry logic gets
+//  a say. Measuring both from the same candles makes the reward-to-risk
+//  an input you set rather than an accident of two windows disagreeing.
+input ENUM_SL_MODE InpSLMode       = SL_AVG_MOVE;
+input double InpSLAvgMult          = 0.70;     // SL_AVG_MOVE: stop = avg movement x this
 input double InpSLAtrMult          = 1.10;     // used by SL_ATR
 input int    InpSLSwingBars        = 10;       // used by SL_SWING
 input double InpSLBufferAtrMult    = 0.20;     // buffer for SL_SLOW_EMA / SL_SWING
@@ -145,6 +158,7 @@ int bullFMAge = -1, bullFSAge = -1, bearFMAge = -1, bearFSAge = -1;
 int    pendDir       = 0;    // +1 buy, -1 sell, 0 none
 int    pendAge       = 0;    // bars since the second cross completed
 double pendTPValue   = 0.0;  // target distance, frozen at the cross
+double pendAvgMove   = 0.0;  // the raw average movement behind it, for SL_AVG_MOVE
 double pendRefPrice  = 0.0;  // close of the cross bar, for logging
 
 //--- bookkeeping
@@ -467,6 +481,12 @@ void OpenTrade(int dir, double tpValue)
                              : iHigh(_Symbol, PERIOD_CURRENT, iHighest(_Symbol, PERIOD_CURRENT, MODE_HIGH, InpSLSwingBars, 1));
       sl = (dir > 0) ? ext - buffer : ext + buffer;
    }
+   else if(InpSLMode == SL_AVG_MOVE)
+   {
+      double d = (pendAvgMove > 0.0) ? pendAvgMove * InpSLAvgMult
+                                     : (atr > 0.0 ? atr * InpSLAtrMult : InpSLFixedPoints * _Point);
+      sl = (dir > 0) ? entry - d : entry + d;
+   }
    else
    {
       double d = InpSLFixedPoints * _Point;
@@ -644,10 +664,15 @@ void OnTick()
       pendAge      = 0;
       pendRefPrice = iClose(_Symbol, PERIOD_CURRENT, 1);
 
+      //--- the raw average movement is kept as well: SL_AVG_MOVE sizes the
+      //--- stop from the same candles, so reward-to-risk is explicit
+      pendAvgMove = AvgMoveBefore(1, InpTPAvgCandles,
+                                  (InpTPMode == TP_ATR_MULT ? TP_AVG_RANGE : InpTPMode));
+
       if(InpTPMode == TP_ATR_MULT)
          pendTPValue = AtrNow() * InpTPAtrMult;
       else
-         pendTPValue = AvgMoveBefore(1, InpTPAvgCandles, InpTPMode) * InpTPAvgMult;
+         pendTPValue = pendAvgMove * InpTPAvgMult;
 
       if(InpVerboseLog)
          PrintFormat("ARUN EA: %s cross pair complete at %.5f, TP input %.5f",
