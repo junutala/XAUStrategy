@@ -23,6 +23,11 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   last N setups.
   Reads the chart's own symbol, and all thresholds are measured in ATR so it works on
   any pair you select.
+- **`ARUN_EMA_CROSS_EA.mq5`** — a MetaTrader 5 Expert Advisor implementing the
+  `ARUN_EMA_CROSS_V1` indicator's two-stage cross as a tradable, backtestable strategy:
+  Fast/Mid and Fast/Slow crosses inside a bar window, then a confirmation candle that
+  opens and closes beyond the Slow EMA, with an optional RSI-divergence filter, an
+  average-candle take profit and configurable stops.
 - **`Triple_EMA_Cross_Alerts.pine`** — a lightweight EMA-cross alert indicator (the seed
   of the scalping trigger).
 
