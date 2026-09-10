@@ -185,10 +185,16 @@ int OnInit()
       if(csvHandle == INVALID_HANDLE)
          Print("ARUN DRIFT: could not open ", InpCsvName, " err ", GetLastError());
       else
+      {
+         // The tester sandboxes agents, so "Common\Files" is not the folder
+         // under the terminal you would expect. Print where it actually went.
+         PrintFormat("ARUN DRIFT: writing trades to %s\\Files\\%s",
+                     TerminalInfoString(TERMINAL_COMMONDATA_PATH), InpCsvName);
          FileWrite(csvHandle,
                    "idx", "entry_time", "dir", "entry_price", "angle", "drift_run",
                    "atr", "hour", "dow", "exit_time", "exit_reason", "bars_held",
                    "mfe", "mae", "approx_points");
+      }
    }
    return INIT_SUCCEEDED;
 }
