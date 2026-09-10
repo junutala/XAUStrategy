@@ -41,6 +41,14 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   converted to a price distance from the tick value and the lot size actually traded, so
   the +$2 / -$2 at 0.03 lots holds if the size changes. Because nothing manages the trade
   after entry, the CSV it writes measures the entry and only the entry.
+- **`ARUN_SIGNAL_PROBE_EA.mq5`** — the same entry signal as the MTF build, but it places
+  no orders at all. At every signal it records where price went over eight horizons at
+  once, with the best and worst excursion inside each, measured from the mid price. A
+  fixed bracket can only answer whether the entry beats the spread over the one distance
+  you chose; set that distance too short and the answer is always no, because the spread
+  toll per trade is flat in the bracket width while any edge grows with its square. This
+  build removes the bracket so the horizon and the take profit can be read off the data
+  instead of guessed.
 - **`Triple_EMA_Cross_Alerts.pine`** — a lightweight EMA-cross alert indicator (the seed
   of the scalping trigger).
 
