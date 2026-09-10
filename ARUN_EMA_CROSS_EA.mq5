@@ -161,6 +161,19 @@ double pendTPValue   = 0.0;  // target distance, frozen at the cross
 double pendAvgMove   = 0.0;  // the raw average movement behind it, for SL_AVG_MOVE
 double pendRefPrice  = 0.0;  // close of the cross bar, for logging
 
+//--- funnel counters, printed at the end of a run. The point is to make
+//--- "why so few trades" a measurement rather than an argument: every
+//--- signal ends up in exactly one bucket.
+int cntSignals          = 0;   // cross pairs completed
+int cntConfirmed        = 0;   // of those, a confirmation candle appeared
+int cntSkipNoConfirm    = 0;   // window expired without one
+int cntSkipDivergence   = 0;   // confirmed, but no RSI divergence
+int cntSkipPosOpen      = 0;   // confirmed, but a position was already open
+int cntSkipFilters      = 0;   // confirmed, but spread or session blocked it
+int cntSkipTPFloor      = 0;   // target below the ATR floor
+int cntSkipStop         = 0;   // stop closer than the broker allows
+int cntEntries          = 0;   // orders actually sent and filled
+
 //--- bookkeeping
 datetime lastBarTime = 0;
 datetime entryBarTime = 0;
@@ -196,8 +209,26 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
+//--- Where did every signal go? Printed once, at the end of a run.
+void PrintFunnel()
+{
+   double pct = (cntSignals > 0 ? 100.0 / cntSignals : 0.0);
+   Print("=== ARUN EA funnel =========================================");
+   PrintFormat("  cross pairs completed        : %d", cntSignals);
+   PrintFormat("  no confirmation candle       : %d  (%.1f%%)", cntSkipNoConfirm, cntSkipNoConfirm * pct);
+   PrintFormat("  confirmed                    : %d  (%.1f%%)", cntConfirmed,     cntConfirmed * pct);
+   PrintFormat("    rejected by RSI divergence : %d  (%.1f%%)", cntSkipDivergence, cntSkipDivergence * pct);
+   PrintFormat("    position already open      : %d  (%.1f%%)", cntSkipPosOpen,   cntSkipPosOpen * pct);
+   PrintFormat("    spread / session filter    : %d  (%.1f%%)", cntSkipFilters,   cntSkipFilters * pct);
+   PrintFormat("    target below the ATR floor : %d  (%.1f%%)", cntSkipTPFloor,   cntSkipTPFloor * pct);
+   PrintFormat("    stop too close for broker  : %d  (%.1f%%)", cntSkipStop,      cntSkipStop * pct);
+   PrintFormat("  ENTRIES TAKEN                : %d  (%.1f%%)", cntEntries,       cntEntries * pct);
+   Print("============================================================");
+}
+
 void OnDeinit(const int reason)
 {
+   PrintFunnel();
    int hs[] = {hFast, hMid, hSlow, hATR, hRSI};
    for(int i = 0; i < ArraySize(hs); i++)
       if(hs[i] != INVALID_HANDLE) IndicatorRelease(hs[i]);
@@ -496,6 +527,7 @@ void OpenTrade(int dir, double tpValue)
    double slDist = MathAbs(entry - sl);
    if(slDist < minDist || slDist <= 0.0)
    {
+      cntSkipStop++;
       if(InpVerboseLog) Print("ARUN EA: stop too close to price, setup skipped");
       return;
    }
@@ -504,6 +536,7 @@ void OpenTrade(int dir, double tpValue)
    double d = tpValue;
    if(atr > 0.0 && d < atr * InpTPMinAtrMult)
    {
+      cntSkipTPFloor++;
       if(InpVerboseLog)
          PrintFormat("ARUN EA: target %.5f below the %.2f x ATR floor - setup skipped",
                      d, InpTPMinAtrMult);
@@ -523,6 +556,7 @@ void OpenTrade(int dir, double tpValue)
 
    if(ok)
    {
+      cntEntries++;
       entryBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
       entryRisk    = slDist;
       beDone       = false;
@@ -660,6 +694,7 @@ void OnTick()
    //--- measured on the candles before the cross bar, as specified
    if(signalDir != 0)
    {
+      cntSignals++;
       pendDir      = signalDir;
       pendAge      = 0;
       pendRefPrice = iClose(_Symbol, PERIOD_CURRENT, 1);
@@ -679,14 +714,21 @@ void OnTick()
                      (signalDir > 0 ? "BUY" : "SELL"), pendRefPrice, pendTPValue);
 
       //--- the cross bar itself may serve as the confirmation candle
-      if(InpConfirmSameBarOK && ConfirmCandle(1, pendDir) && posDir == 0)
+      if(InpConfirmSameBarOK && ConfirmCandle(1, pendDir))
       {
-         if(!InpUseDivergence || HasDivergence(pendDir, 1))
+         cntConfirmed++;
+         if(posDir != 0) cntSkipPosOpen++;
+         else if(InpUseDivergence && !HasDivergence(pendDir, 1))
          {
-            if(SpreadOK() && SessionOK()) OpenTrade(pendDir, pendTPValue);
-            else if(InpVerboseLog) Print("ARUN EA: blocked by spread or session filter");
+            cntSkipDivergence++;
+            if(InpVerboseLog) Print("ARUN EA: no RSI divergence, setup skipped");
          }
-         else if(InpVerboseLog) Print("ARUN EA: no RSI divergence, setup skipped");
+         else if(!SpreadOK() || !SessionOK())
+         {
+            cntSkipFilters++;
+            if(InpVerboseLog) Print("ARUN EA: blocked by spread or session filter");
+         }
+         else OpenTrade(pendDir, pendTPValue);
          pendDir = 0;
       }
       ShowComment();
@@ -699,20 +741,25 @@ void OnTick()
       pendAge++;
       if(pendAge > InpConfirmWithinBars)
       {
+         cntSkipNoConfirm++;
          if(InpVerboseLog) Print("ARUN EA: no confirmation candle in window, setup dropped");
          pendDir = 0;
       }
       else if(ConfirmCandle(1, pendDir))
       {
-         if(posDir == 0)
+         cntConfirmed++;
+         if(posDir != 0) cntSkipPosOpen++;
+         else if(InpUseDivergence && !HasDivergence(pendDir, 1))
          {
-            if(!InpUseDivergence || HasDivergence(pendDir, 1))
-            {
-               if(SpreadOK() && SessionOK()) OpenTrade(pendDir, pendTPValue);
-               else if(InpVerboseLog) Print("ARUN EA: blocked by spread or session filter");
-            }
-            else if(InpVerboseLog) Print("ARUN EA: no RSI divergence, setup skipped");
+            cntSkipDivergence++;
+            if(InpVerboseLog) Print("ARUN EA: no RSI divergence, setup skipped");
          }
+         else if(!SpreadOK() || !SessionOK())
+         {
+            cntSkipFilters++;
+            if(InpVerboseLog) Print("ARUN EA: blocked by spread or session filter");
+         }
+         else OpenTrade(pendDir, pendTPValue);
          pendDir = 0;
       }
    }
