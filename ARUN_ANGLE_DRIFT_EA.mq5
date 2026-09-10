@@ -55,6 +55,13 @@
 
 enum ENUM_LOTS_MODE { LOTS_FIXED = 0, LOTS_RISK_PCT = 1 };
 
+//--- how the candle is judged against the Slow EMA
+enum ENUM_CANDLE_MODE
+{
+   CANDLE_BODY = 0,   // open and close both beyond the Slow EMA
+   CANDLE_FULL = 1    // the whole candle, wicks included, beyond it
+};
+
 //=== EMA / cross engine (unchanged from ARUN_EMA_CROSS_V1) =========
 input int    InpFastLen           = 7;
 input int    InpMidLen            = 21;
@@ -71,6 +78,15 @@ input int    InpDriftMinBars      = 3;      // run must be at least this long at
 input int    InpDriftMaxBars      = 5;      // ... and at most this long. 0 = no upper limit
 input bool   InpRequireAngleSide  = true;   // angle must also be past 90 in the trade's direction
 input double InpDriftEps          = 0.0;    // increments smaller than this count as no move
+
+//=== Candle must clear the Slow EMA =================================
+// The original specification: after the two crosses, a complete candle
+// opens and closes on the correct side of the Slow line. It was dropped
+// when the drift gate came in, so the two have never been required
+// together - this puts that combination back on the table.
+input bool   InpRequireCandle     = true;
+input ENUM_CANDLE_MODE InpCandleMode = CANDLE_BODY;
+input int    InpCandleWithinBars  = 3;      // bars after the cross to wait for it
 
 //=== Exit 1: average angle increment (AAI) ==========================
 input int    InpAaiArmBars        = 3;      // bars in trade before this exit arms
@@ -119,6 +135,11 @@ int hFast = INVALID_HANDLE, hMid = INVALID_HANDLE, hSlow = INVALID_HANDLE, hATR 
 //--- cross state, in bars since, -1 for no live leg
 int bullFMAge = -1, bullFSAge = -1, bearFMAge = -1, bearFSAge = -1;
 
+//--- a setup waiting for its candle to clear the Slow EMA
+int    pendDir  = 0;
+int    pendAge  = 0;
+double pendAngle = 0.0;
+
 //--- drift state
 int    driftDir = 0;        // +1 rising, -1 falling, 0 flat
 int    driftRun = 0;        // bars the current run has lasted
@@ -149,7 +170,7 @@ int      entryDow     = 0;
 
 //--- diagnostics
 int cntSignals = 0, cntDriftWrongWay = 0, cntDriftTooShort = 0, cntDriftTooLong = 0;
-int cntAngleSide = 0, cntPosOpen = 0, cntFilters = 0, cntEntries = 0;
+int cntAngleSide = 0, cntPosOpen = 0, cntFilters = 0, cntEntries = 0, cntNoCandle = 0;
 int cntExitAai = 0, cntExitGiveback = 0, cntExitOpposite = 0, cntExitStop = 0;
 int runHistUp[13], runHistDn[13];
 double sumMfe = 0.0, sumMae = 0.0, sumBars = 0.0;
@@ -370,6 +391,27 @@ void UpdateDrift(double angleNow)
 }
 
 //+------------------------------------------------------------------+
+//| Is this candle wholly on the trade's side of the Slow EMA?       |
+//+------------------------------------------------------------------+
+bool CandleClearsSlow(int shift, int dir)
+{
+   double o = iOpen(_Symbol,  PERIOD_CURRENT, shift);
+   double c = iClose(_Symbol, PERIOD_CURRENT, shift);
+   double h = iHigh(_Symbol,  PERIOD_CURRENT, shift);
+   double l = iLow(_Symbol,   PERIOD_CURRENT, shift);
+   double e = BufAt(hSlow, shift);
+   if(e == EMPTY_VALUE || o <= 0.0 || c <= 0.0) return false;
+
+   if(dir > 0)
+   {
+      if(InpCandleMode == CANDLE_FULL) return (l > e);
+      return (o > e && c > e);
+   }
+   if(InpCandleMode == CANDLE_FULL) return (h < e);
+   return (o < e && c < e);
+}
+
+//+------------------------------------------------------------------+
 //| Entry                                                            |
 //+------------------------------------------------------------------+
 void OpenTrade(int dir, double angleNow)
@@ -541,6 +583,7 @@ void PrintReport()
    PrintFormat("    drift run too short      : %d  (%.1f%%)", cntDriftTooShort, cntDriftTooShort * pct);
    PrintFormat("    drift run too long       : %d  (%.1f%%)", cntDriftTooLong,  cntDriftTooLong  * pct);
    PrintFormat("    angle on the wrong side  : %d  (%.1f%%)", cntAngleSide,     cntAngleSide     * pct);
+   PrintFormat("    no candle cleared Slow   : %d  (%.1f%%)", cntNoCandle,      cntNoCandle      * pct);
    PrintFormat("    position already open    : %d  (%.1f%%)", cntPosOpen,       cntPosOpen       * pct);
    PrintFormat("    spread / session         : %d  (%.1f%%)", cntFilters,       cntFilters       * pct);
    PrintFormat("  ENTRIES TAKEN              : %d  (%.1f%%)", cntEntries,       cntEntries       * pct);
@@ -591,6 +634,24 @@ void OnTick()
    UpdateDrift(angleNow);
    ManageBar(angleNow);
 
+   //--- a setup waiting on its candle: take it, or let the window expire
+   if(pendDir != 0)
+   {
+      pendAge++;
+      ulong ptk = 0;
+      if(MyPosition(ptk) != 0)                    pendDir = 0;   // no room for it now
+      else if(CandleClearsSlow(1, pendDir))
+      {
+         OpenTrade(pendDir, angleNow == EMPTY_VALUE ? pendAngle : angleNow);
+         pendDir = 0;
+      }
+      else if(pendAge >= InpCandleWithinBars)
+      {
+         cntNoCandle++;
+         pendDir = 0;
+      }
+   }
+
    int signalDir = 0;
    UpdateCross(signalDir);
 
@@ -618,7 +679,15 @@ void OnTick()
    if(posDir != 0)                                       { cntPosOpen++;       ShowComment(); return; }
    if(!SpreadOK() || !SessionOK())                       { cntFilters++;       ShowComment(); return; }
 
-   OpenTrade(signalDir, angleNow);
+   if(!InpRequireCandle || CandleClearsSlow(1, signalDir))
+      OpenTrade(signalDir, angleNow);
+   else
+   {
+      //--- everything else passed; hold it until a candle clears the Slow EMA
+      pendDir   = signalDir;
+      pendAge   = 0;
+      pendAngle = angleNow;
+   }
    ShowComment();
 }
 //+------------------------------------------------------------------+
