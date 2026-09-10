@@ -104,6 +104,15 @@ input int    InpSessionEndHour    = 20;
 input bool   InpShowComment       = true;
 input bool   InpVerboseLog        = false;  // off by default: 6 months of logs is unreadable
 
+//=== Per-trade CSV ==================================================
+// One row per trade with the features it was taken on, written to the
+// terminal's Common\Files folder. This is what lets the entry be tested
+// by bucket - by angle, by drift run, by hour - instead of only in
+// aggregate. Automatically skipped during optimisation, where parallel
+// agents would fight over the file.
+input bool   InpWriteCsv          = true;
+input string InpCsvName           = "arun_drift_trades.csv";
+
 //--- handles
 int hFast = INVALID_HANDLE, hMid = INVALID_HANDLE, hSlow = INVALID_HANDLE, hATR = INVALID_HANDLE;
 
@@ -129,6 +138,14 @@ string   closeReason  = "";
 
 datetime lastBarTime = 0;
 string   lastNote    = "";
+
+//--- CSV state and the features captured at entry
+int      csvHandle    = INVALID_HANDLE;
+int      tradeIdx     = 0;
+datetime entryTime    = 0;
+int      entryRun     = 0;
+int      entryHour    = 0;
+int      entryDow     = 0;
 
 //--- diagnostics
 int cntSignals = 0, cntDriftWrongWay = 0, cntDriftTooShort = 0, cntDriftTooLong = 0;
@@ -160,11 +177,30 @@ int OnInit()
    ArrayInitialize(runHistUp, 0);
    ArrayInitialize(runHistDn, 0);
    lastBarTime = 0;
+
+   if(InpWriteCsv && !MQLInfoInteger(MQL_OPTIMIZATION))
+   {
+      csvHandle = FileOpen(InpCsvName,
+                           FILE_WRITE | FILE_CSV | FILE_COMMON | FILE_ANSI, ',');
+      if(csvHandle == INVALID_HANDLE)
+         Print("ARUN DRIFT: could not open ", InpCsvName, " err ", GetLastError());
+      else
+         FileWrite(csvHandle,
+                   "idx", "entry_time", "dir", "entry_price", "angle", "drift_run",
+                   "atr", "hour", "dow", "exit_time", "exit_reason", "bars_held",
+                   "mfe", "mae", "approx_points");
+   }
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
+   if(csvHandle != INVALID_HANDLE)
+   {
+      FileClose(csvHandle);
+      csvHandle = INVALID_HANDLE;
+      PrintFormat("ARUN DRIFT: wrote %d trades to Common\\Files\\%s", tradeIdx, InpCsvName);
+   }
    PrintReport();
    int hs[] = {hFast, hMid, hSlow, hATR};
    for(int i = 0; i < ArraySize(hs); i++)
@@ -357,6 +393,12 @@ void OpenTrade(int dir, double angleNow)
    }
 
    cntEntries++;
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   entryTime   = TimeCurrent();
+   entryRun    = driftRun;
+   entryHour   = dt.hour;
+   entryDow    = dt.day_of_week;
    inTrade     = true;
    tradeDir    = dir;
    entryPrice  = px;
@@ -375,6 +417,30 @@ void OpenTrade(int dir, double angleNow)
 
 void FinaliseTrade(string reason)
 {
+   if(csvHandle != INVALID_HANDLE)
+   {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double exitPx = (tradeDir > 0) ? bid : ask;
+      tradeIdx++;
+      FileWrite(csvHandle,
+                IntegerToString(tradeIdx),
+                TimeToString(entryTime, TIME_DATE | TIME_SECONDS),
+                IntegerToString(tradeDir),
+                DoubleToString(entryPrice, _Digits),
+                DoubleToString(entryAngle, 3),
+                IntegerToString(entryRun),
+                DoubleToString(entryAtr, _Digits),
+                IntegerToString(entryHour),
+                IntegerToString(entryDow),
+                TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+                reason,
+                IntegerToString(barsInTrade),
+                DoubleToString(peakProfit, _Digits),
+                DoubleToString(worstProfit, _Digits),
+                DoubleToString(tradeDir * (exitPx - entryPrice), _Digits));
+   }
+
    sumMfe  += peakProfit;
    sumMae  += worstProfit;
    sumBars += barsInTrade;
