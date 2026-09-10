@@ -86,7 +86,11 @@ input double InpDriftEps          = 0.0;    // increments smaller than this coun
 // together - this puts that combination back on the table.
 input bool   InpRequireCandle     = true;
 input ENUM_CANDLE_MODE InpCandleMode = CANDLE_BODY;
-input int    InpCandleWithinBars  = 3;      // bars after the cross to wait for it
+// 0 = the cross bar itself must clear the Slow EMA, or the setup is
+// dropped. Anything above 0 allows that many further bars, which in
+// testing turned the condition into a delay rather than a filter: a
+// window of 3 rejected 3 setups out of 2099.
+input int    InpCandleWithinBars  = 0;      // bars after the cross to wait for it
 
 //=== Exit 1: average angle increment (AAI) ==========================
 input int    InpAaiArmBars        = 3;      // bars in trade before this exit arms
@@ -681,6 +685,8 @@ void OnTick()
 
    if(!InpRequireCandle || CandleClearsSlow(1, signalDir))
       OpenTrade(signalDir, angleNow);
+   else if(InpCandleWithinBars <= 0)
+      cntNoCandle++;                 //--- strict: the cross bar or nothing
    else
    {
       //--- everything else passed; hold it until a candle clears the Slow EMA
