@@ -19,21 +19,21 @@
 //|   Stop loss    : see ENUM_SL_MODE - default ATR multiple.         |
 //|   Optional breakeven, ATR trail, time stop, opposite-signal exit. |
 //|                                                                  |
-//| TWO SPEC AMBIGUITIES, RESOLVED AS OPTIONS RATHER THAN GUESSES     |
+//| ON THE TWO READINGS OF THE SPEC                                   |
 //|                                                                  |
 //| 1. "complete candle opens and closes above/below the Slow line"   |
 //|    reads as the BODY (open and close). InpConfirmMode defaults to |
 //|    CONFIRM_BODY for that literal reading; CONFIRM_FULL also       |
 //|    requires the wicks to be clear of the Slow EMA.                |
 //|                                                                  |
-//| 2. "take profit - average of the last five candles" can mean the  |
-//|    average candle SIZE or an average PRICE level. As a price      |
-//|    level it usually sits behind the entry - the mean of the five  |
-//|    candles before an upward cross is below where you buy - so     |
-//|    TP_AVG_RANGE (average high-low, applied as a distance) is the  |
-//|    default. TP_AVG_PRICE implements the literal level reading and |
-//|    SKIPS any trade where that level is on the wrong side of the   |
-//|    entry, which will show you quickly how often it is unusable.   |
+//| 2. Take profit is the average MOVEMENT of the candles before the  |
+//|    cross, used as a distance - direction plays no part. Movement  |
+//|    can be measured three ways and they are not the same size, so  |
+//|    all three are selectable: the candle range (high-low, the      |
+//|    default), the body (|close-open|), or close-to-close travel.   |
+//|    Note that the average range over N candles is close to an      |
+//|    N-period ATR, so TP_AVG_RANGE and TP_ATR_MULT are cousins -    |
+//|    the first reacts faster, the second is smoother.               |
 //|                                                                  |
 //| NOT COMPILED BY ITS AUTHOR - open in MetaEditor and compile (F7)  |
 //| before trusting a single number it produces.                      |
@@ -54,9 +54,10 @@ enum ENUM_CONFIRM_MODE
 //--- how take profit is derived
 enum ENUM_TP_MODE
 {
-   TP_AVG_RANGE = 0,   // distance = average (high-low) of the N candles before the cross
-   TP_AVG_PRICE = 1,   // level    = average typical price of those candles (literal reading)
-   TP_ATR_MULT  = 2    // distance = ATR x multiplier
+   TP_AVG_RANGE = 0,   // average high-low of the N candles before the cross
+   TP_AVG_BODY  = 1,   // average |close-open| of those candles
+   TP_AVG_CLOSE = 2,   // average |close-to-close| travel across those candles
+   TP_ATR_MULT  = 3    // ATR x multiplier
 };
 
 //--- how stop loss is derived
@@ -90,6 +91,7 @@ input bool   InpConfirmSameBarOK   = true;     // the second-cross bar may itsel
 //=== Take profit ====================================================
 input ENUM_TP_MODE InpTPMode       = TP_AVG_RANGE;
 input int    InpTPAvgCandles       = 5;        // candles averaged, taken BEFORE the cross bar
+input double InpTPAvgMult          = 1.0;      // multiply the average movement by this
 input double InpTPAtrMult          = 1.5;      // used only by TP_ATR_MULT
 input double InpTPMinAtrMult       = 0.30;     // reject targets smaller than this x ATR
 
@@ -142,7 +144,7 @@ int bullFMAge = -1, bullFSAge = -1, bearFMAge = -1, bearFSAge = -1;
 //--- pending setup awaiting its confirmation candle
 int    pendDir       = 0;    // +1 buy, -1 sell, 0 none
 int    pendAge       = 0;    // bars since the second cross completed
-double pendTPValue   = 0.0;  // distance or level, per InpTPMode
+double pendTPValue   = 0.0;  // target distance, frozen at the cross
 double pendRefPrice  = 0.0;  // close of the cross bar, for logging
 
 //--- bookkeeping
@@ -348,24 +350,11 @@ bool ConfirmCandle(int shift, int dir)
 }
 
 //+------------------------------------------------------------------+
-//| Take profit inputs, measured on the candles BEFORE the cross bar |
+//| Average MOVEMENT of the candles BEFORE the cross bar.            |
+//| Always a distance, never a level - which way those candles went  |
+//| is irrelevant, only how far they travelled.                      |
 //+------------------------------------------------------------------+
-double AvgRangeBefore(int crossShift, int count)
-{
-   double sum = 0.0;
-   int n = 0;
-   for(int i = crossShift + 1; i <= crossShift + count; i++)
-   {
-      double h = iHigh(_Symbol, PERIOD_CURRENT, i);
-      double l = iLow(_Symbol,  PERIOD_CURRENT, i);
-      if(h <= 0.0 || l <= 0.0) continue;
-      sum += (h - l);
-      n++;
-   }
-   return (n > 0 ? sum / n : 0.0);
-}
-
-double AvgTypicalBefore(int crossShift, int count)
+double AvgMoveBefore(int crossShift, int count, ENUM_TP_MODE mode)
 {
    double sum = 0.0;
    int n = 0;
@@ -373,9 +362,20 @@ double AvgTypicalBefore(int crossShift, int count)
    {
       double h = iHigh(_Symbol,  PERIOD_CURRENT, i);
       double l = iLow(_Symbol,   PERIOD_CURRENT, i);
+      double o = iOpen(_Symbol,  PERIOD_CURRENT, i);
       double c = iClose(_Symbol, PERIOD_CURRENT, i);
-      if(h <= 0.0 || l <= 0.0 || c <= 0.0) continue;
-      sum += (h + l + c) / 3.0;
+      if(h <= 0.0 || l <= 0.0 || o <= 0.0 || c <= 0.0) continue;
+
+      double move = 0.0;
+      if(mode == TP_AVG_RANGE)      move = h - l;
+      else if(mode == TP_AVG_BODY)  move = MathAbs(c - o);
+      else                          // TP_AVG_CLOSE
+      {
+         double cPrev = iClose(_Symbol, PERIOD_CURRENT, i + 1);
+         if(cPrev <= 0.0) continue;
+         move = MathAbs(c - cPrev);
+      }
+      sum += move;
       n++;
    }
    return (n > 0 ? sum / n : 0.0);
@@ -480,39 +480,17 @@ void OpenTrade(int dir, double tpValue)
       return;
    }
 
-   //--- take profit
-   double tp = 0.0;
-   if(InpTPMode == TP_AVG_PRICE)
+   //--- take profit, always a distance from the entry
+   double d = tpValue;
+   if(atr > 0.0 && d < atr * InpTPMinAtrMult)
    {
-      tp = tpValue;   // an absolute level
-      if(dir > 0 && tp <= entry + minDist)
-      {
-         if(InpVerboseLog)
-            PrintFormat("ARUN EA: TP_AVG_PRICE level %.5f is not above entry %.5f - setup skipped",
-                        tp, entry);
-         return;
-      }
-      if(dir < 0 && tp >= entry - minDist)
-      {
-         if(InpVerboseLog)
-            PrintFormat("ARUN EA: TP_AVG_PRICE level %.5f is not below entry %.5f - setup skipped",
-                        tp, entry);
-         return;
-      }
+      if(InpVerboseLog)
+         PrintFormat("ARUN EA: target %.5f below the %.2f x ATR floor - setup skipped",
+                     d, InpTPMinAtrMult);
+      return;
    }
-   else
-   {
-      double d = tpValue;   // a distance
-      if(atr > 0.0 && d < atr * InpTPMinAtrMult)
-      {
-         if(InpVerboseLog)
-            PrintFormat("ARUN EA: target %.5f below the %.2f x ATR floor - setup skipped",
-                        d, InpTPMinAtrMult);
-         return;
-      }
-      if(d < minDist) d = minDist;
-      tp = (dir > 0) ? entry + d : entry - d;
-   }
+   if(d < minDist) d = minDist;
+   double tp = (dir > 0) ? entry + d : entry - d;
 
    sl = NormalizeDouble(sl, _Digits);
    tp = NormalizeDouble(tp, _Digits);
@@ -666,9 +644,10 @@ void OnTick()
       pendAge      = 0;
       pendRefPrice = iClose(_Symbol, PERIOD_CURRENT, 1);
 
-      if(InpTPMode == TP_AVG_RANGE)      pendTPValue = AvgRangeBefore(1, InpTPAvgCandles);
-      else if(InpTPMode == TP_AVG_PRICE) pendTPValue = AvgTypicalBefore(1, InpTPAvgCandles);
-      else                               pendTPValue = AtrNow() * InpTPAtrMult;
+      if(InpTPMode == TP_ATR_MULT)
+         pendTPValue = AtrNow() * InpTPAtrMult;
+      else
+         pendTPValue = AvgMoveBefore(1, InpTPAvgCandles, InpTPMode) * InpTPAvgMult;
 
       if(InpVerboseLog)
          PrintFormat("ARUN EA: %s cross pair complete at %.5f, TP input %.5f",
