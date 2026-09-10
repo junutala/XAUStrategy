@@ -28,6 +28,11 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   Fast/Mid and Fast/Slow crosses inside a bar window, then a confirmation candle that
   opens and closes beyond the Slow EMA, with an optional RSI-divergence filter, an
   average-candle take profit and configurable stops.
+- **`ARUN_ANGLE_DRIFT_EA.mq5`** — the measurement build: the same two-stage cross, gated
+  by ATR-normalised angle drift on the Fast EMA, with no fixed take profit or stop
+  distance. Exits on momentum decay (an adverse angle move larger than the trade's own
+  average angle gain), on peak-profit giveback, or on a wide catastrophic stop. Prints a
+  drift run-length histogram and a signal funnel so the thresholds get set from data.
 - **`Triple_EMA_Cross_Alerts.pine`** — a lightweight EMA-cross alert indicator (the seed
   of the scalping trigger).
 
