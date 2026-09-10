@@ -33,6 +33,14 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   distance. Exits on momentum decay (an adverse angle move larger than the trade's own
   average angle gain), on peak-profit giveback, or on a wide catastrophic stop. Prints a
   drift run-length histogram and a signal funnel so the thresholds get set from data.
+- **`ARUN_MTF_TPSL_EA.mq5`** — a separate line of enquiry, sharing no code with the drift
+  build. The Fast EMA must cross the Mid or the Slow EMA on a higher timeframe, the same
+  cross must then happen on the chart timeframe while the higher-timeframe one is still
+  fresh, and the last candle must be completely clear of the Slow EMA. The trade is then
+  left alone: a fixed take profit and stop, both specified in account currency and
+  converted to a price distance from the tick value and the lot size actually traded, so
+  the +$2 / -$2 at 0.03 lots holds if the size changes. Because nothing manages the trade
+  after entry, the CSV it writes measures the entry and only the entry.
 - **`Triple_EMA_Cross_Alerts.pine`** — a lightweight EMA-cross alert indicator (the seed
   of the scalping trigger).
 
