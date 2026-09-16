@@ -173,19 +173,6 @@ void LabelCreate(string name,string text,int x,int y,color clr,int fs,bool bold=
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
 }
-void RectCreate(string name,int x,int y,int w,int h,color bg,color border)
-{
-   if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_RECTANGLE_LABEL,0,0,0);
-   ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
-   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);
-   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);
-   ObjectSetInteger(0,name,OBJPROP_XSIZE,w);
-   ObjectSetInteger(0,name,OBJPROP_YSIZE,h);
-   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,bg);
-   ObjectSetInteger(0,name,OBJPROP_BORDER_COLOR,border);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
-}
 void DashRow(int &r,string key,string value,color valueColor=clrBlack,bool boldValue=false)
 {
    int y=InpDashY+28+r*20;
@@ -463,11 +450,10 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    string mtfStatus=mtfBull?"BULL":mtfBear?"BEAR":"MIXED";
    string angleStatus=angleBull?"ALIGNED UP":angleBear?"ALIGNED DN":"MIXED";
 
-   // Compact panel: title + 10 rows.
-   int rows=10;
-   RectCreate(PREFIX+"BG",InpDashX,InpDashY,320,rows*20+38,clrWhite,clrGray);
-   RectCreate(PREFIX+"HDR",InpDashX,InpDashY,320,25,clrGray,clrGray);
-   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",InpDashX+20,InpDashY+4,clrWhite,11,true);
+   // No background panel or header bar: the rectangles anchor from the
+   // right corner while the labels anchor from their own left edge, so
+   // the box never lined up behind the text. Text straight on the chart.
+   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",InpDashX+185,InpDashY+4,clrBlack,11,true);
 
    int r=0;
    DashRow(r,"TREND",trend,bull?clrGreen:bear?clrRed:clrBlack,true);
