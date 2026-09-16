@@ -93,6 +93,15 @@ int hMtfFast3 = INVALID_HANDLE, hMtfMid3 = INVALID_HANDLE, hMtfSlow3 = INVALID_H
 
 //--- Dashboard object prefix
 string PREFIX = "ARUNPRO8_";
+
+//--- Live panel origin. Starts at the inputs, then follows the title
+//--- label when it is dragged. X grows leftwards from the right edge.
+int gDashX = 0, gDashY = 0;
+
+//--- column offsets inside a row, relative to gDashX
+#define COL_KEY   185     // row label
+#define COL_VAL    20     // row value, and the first of the three angles
+#define COL_STEP   60     // the angles step rightwards, so X decreases
 datetime lastBuyAlertBar = 0, lastSellAlertBar = 0;
 
 //--- Helpers
@@ -160,7 +169,7 @@ void DeleteDashboard()
       if(StringFind(n,PREFIX)==0) ObjectDelete(0,n);
    }
 }
-void LabelCreate(string name,string text,int x,int y,color clr,int fs,bool bold=false)
+void LabelCreate(string name,string text,int x,int y,color clr,int fs,bool bold=false,bool selectable=false)
 {
    if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_LABEL,0,0,0);
    ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_RIGHT_UPPER);
@@ -170,14 +179,14 @@ void LabelCreate(string name,string text,int x,int y,color clr,int fs,bool bold=
    ObjectSetInteger(0,name,OBJPROP_FONTSIZE,fs);
    ObjectSetString(0,name,OBJPROP_FONT,bold ? "Arial Bold" : "Arial");
    ObjectSetString(0,name,OBJPROP_TEXT,text);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,selectable);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,!selectable);
 }
 void DashRow(int &r,string key,string value,color valueColor=clrBlack,bool boldValue=false)
 {
-   int y=InpDashY+28+r*20;
-   LabelCreate(PREFIX+"K"+IntegerToString(r),key,InpDashX+185,y,clrBlack,InpDashFontSize);
-   LabelCreate(PREFIX+"V"+IntegerToString(r),value,InpDashX+20,y,valueColor,InpDashFontSize,boldValue);
+   int y=gDashY+28+r*20;
+   LabelCreate(PREFIX+"K"+IntegerToString(r),key,gDashX+COL_KEY,y,clrBlack,InpDashFontSize);
+   LabelCreate(PREFIX+"V"+IntegerToString(r),value,gDashX+COL_VAL,y,valueColor,InpDashFontSize,boldValue);
    r++;
 }
 
@@ -186,11 +195,13 @@ void DashRow(int &r,string key,string value,color valueColor=clrBlack,bool boldV
 //--- X grows leftwards from the right edge, so Fast sits leftmost.
 void DashRowAngles(int &r,double fa,double ma,double sa)
 {
-   int y=InpDashY+28+r*20;
-   LabelCreate(PREFIX+"K"+IntegerToString(r),"ANGLE",InpDashX+185,y,clrBlack,InpDashFontSize);
-   LabelCreate(PREFIX+"ANG_F",AngleText("F",fa),InpDashX+140,y,AngleColor(fa),InpDashFontSize,true);
-   LabelCreate(PREFIX+"ANG_M",AngleText("M",ma),InpDashX+ 90,y,AngleColor(ma),InpDashFontSize,true);
-   LabelCreate(PREFIX+"ANG_S",AngleText("S",sa),InpDashX+ 40,y,AngleColor(sa),InpDashFontSize,true);
+   int y=gDashY+28+r*20;
+   LabelCreate(PREFIX+"K"+IntegerToString(r),"ANGLE",gDashX+COL_KEY,y,clrBlack,InpDashFontSize);
+   //--- first angle shares the value column with every other row, the
+   //--- other two step rightwards from it
+   LabelCreate(PREFIX+"ANG_F",AngleText("F",fa),gDashX+COL_VAL,            y,AngleColor(fa),InpDashFontSize,true);
+   LabelCreate(PREFIX+"ANG_M",AngleText("M",ma),gDashX+COL_VAL-COL_STEP,   y,AngleColor(ma),InpDashFontSize,true);
+   LabelCreate(PREFIX+"ANG_S",AngleText("S",sa),gDashX+COL_VAL-2*COL_STEP, y,AngleColor(sa),InpDashFontSize,true);
    r++;
 }
 
@@ -227,8 +238,8 @@ color CountdownColor()
 }
 void DrawCountdown(int y)
 {
-   LabelCreate(PREFIX+"KCD","CANDLE CLOSE",InpDashX+185,y,clrBlack,InpDashFontSize);
-   LabelCreate(PREFIX+"VCD",CountdownText(),InpDashX+20,y,CountdownColor(),InpDashFontSize,true);
+   LabelCreate(PREFIX+"KCD","CANDLE CLOSE",gDashX+COL_KEY,y,clrBlack,InpDashFontSize);
+   LabelCreate(PREFIX+"VCD",CountdownText(),gDashX+COL_VAL,y,CountdownColor(),InpDashFontSize,true);
 }
 
 //--- Copy handle data
@@ -453,7 +464,9 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    // No background panel or header bar: the rectangles anchor from the
    // right corner while the labels anchor from their own left edge, so
    // the box never lined up behind the text. Text straight on the chart.
-   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",InpDashX+185,InpDashY+4,clrBlack,11,true);
+   //--- the title doubles as the drag handle, so it is the one object
+   //--- on the panel that is selectable
+   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",gDashX+COL_KEY,gDashY+4,clrBlack,11,true,true);
 
    int r=0;
    DashRow(r,"TREND",trend,bull?clrGreen:bear?clrRed:clrBlack,true);
@@ -466,7 +479,7 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    DashRow(r,"SELL CONF",ConfidenceText(sw,sc),ConfidenceColor(sw,sc),true);
    DashRow(r,"CHART",TFText((ENUM_TIMEFRAMES)Period()),clrBlack,false);
 
-   gCountdownY=InpDashY+28+r*20;
+   gCountdownY=gDashY+28+r*20;
    DrawCountdown(gCountdownY);
    r++;
 }
@@ -476,8 +489,42 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
 void OnTimer()
 {
    if(!InpShowDashboard || gCountdownY<0) return;
-   LabelCreate(PREFIX+"VCD",CountdownText(),InpDashX+20,gCountdownY,
+   LabelCreate(PREFIX+"VCD",CountdownText(),gDashX+COL_VAL,gCountdownY,
                CountdownColor(),InpDashFontSize,true);
+   ChartRedraw(0);
+}
+
+//--- Move every panel object by the same delta. Used when the title is
+//--- dragged: MT5 moves the dragged object itself, the rest follow here.
+void ShiftDashboard(int dx,int dy)
+{
+   int total=ObjectsTotal(0,-1,-1);
+   for(int i=0;i<total;i++)
+   {
+      string n=ObjectName(0,i,-1,-1);
+      if(StringFind(n,PREFIX)!=0) continue;
+      if(n==PREFIX+"TITLE") continue;
+      ObjectSetInteger(0,n,OBJPROP_XDISTANCE,(int)ObjectGetInteger(0,n,OBJPROP_XDISTANCE)+dx);
+      ObjectSetInteger(0,n,OBJPROP_YDISTANCE,(int)ObjectGetInteger(0,n,OBJPROP_YDISTANCE)+dy);
+   }
+}
+
+//--- Dragging the title moves the whole panel. The new origin is kept
+//--- in gDashX / gDashY so the next redraw rebuilds it in place.
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id!=CHARTEVENT_OBJECT_DRAG) return;
+   if(sparam!=PREFIX+"TITLE")     return;
+
+   int nx=(int)ObjectGetInteger(0,sparam,OBJPROP_XDISTANCE);
+   int ny=(int)ObjectGetInteger(0,sparam,OBJPROP_YDISTANCE);
+   int dx=nx-(gDashX+COL_KEY);
+   int dy=ny-(gDashY+4);
+   if(dx==0 && dy==0) return;
+
+   gDashX+=dx; gDashY+=dy;
+   if(gCountdownY>=0) gCountdownY+=dy;
+   ShiftDashboard(dx,dy);
    ChartRedraw(0);
 }
 
@@ -515,6 +562,7 @@ int OnInit()
    ArraySetAsSeries(BuyBuffer,true);ArraySetAsSeries(SellBuffer,true);
 
    IndicatorSetString(INDICATOR_SHORTNAME,"ARUN PRO v8 MT5");
+   gDashX=InpDashX; gDashY=InpDashY;
    gCountdownY=-1;
    EventSetTimer(1);
    return INIT_SUCCEEDED;
