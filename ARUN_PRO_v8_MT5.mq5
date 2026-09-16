@@ -1,11 +1,15 @@
 //+------------------------------------------------------------------+
-//|                                                ARUN_PRO_v7.mq5   |
-//| Native MT5 conversion of ARUN Indicator Pro v7 - Confidence     |
-//| Engine. Signal logic is kept aligned with the supplied Pine v7. |
+//|                                                ARUN_PRO_v8.mq5   |
+//| Native MT5 ARUN Indicator Pro v8 - Confidence Engine.           |
+//| Signal logic is unchanged from v7. The panel differs: the three  |
+//| measured angles are printed and coloured individually, TARGET    |
+//| and POTENTIAL are gone, and a countdown to the candle close was  |
+//| added. Object names carry their own version prefix so v7 and v8  |
+//| can sit on the same chart without overwriting each other.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.00"
-#property description "ARUN PRO v7 - Native MT5 Confidence Engine"
+#property version   "8.00"
+#property description "ARUN PRO v8 - Native MT5 Confidence Engine"
 #property indicator_chart_window
 #property indicator_buffers 5
 #property indicator_plots   5
@@ -88,7 +92,7 @@ int hMtfFast2 = INVALID_HANDLE, hMtfMid2 = INVALID_HANDLE, hMtfSlow2 = INVALID_H
 int hMtfFast3 = INVALID_HANDLE, hMtfMid3 = INVALID_HANDLE, hMtfSlow3 = INVALID_HANDLE;
 
 //--- Dashboard object prefix
-string PREFIX = "ARUNPRO7_";
+string PREFIX = "ARUNPRO8_";
 datetime lastBuyAlertBar = 0, lastSellAlertBar = 0;
 
 //--- Helpers
@@ -463,7 +467,7 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    int rows=10;
    RectCreate(PREFIX+"BG",InpDashX,InpDashY,320,rows*20+38,clrWhite,clrGray);
    RectCreate(PREFIX+"HDR",InpDashX,InpDashY,320,25,clrGray,clrGray);
-   LabelCreate(PREFIX+"TITLE","ARUN PRO v7",InpDashX+20,InpDashY+4,clrWhite,11,true);
+   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",InpDashX+20,InpDashY+4,clrWhite,11,true);
 
    int r=0;
    DashRow(r,"TREND",trend,bull?clrGreen:bear?clrRed:clrBlack,true);
@@ -524,7 +528,7 @@ int OnInit()
    ArraySetAsSeries(FastBuffer,true);ArraySetAsSeries(MidBuffer,true);ArraySetAsSeries(SlowBuffer,true);
    ArraySetAsSeries(BuyBuffer,true);ArraySetAsSeries(SellBuffer,true);
 
-   IndicatorSetString(INDICATOR_SHORTNAME,"ARUN PRO v7 MT5");
+   IndicatorSetString(INDICATOR_SHORTNAME,"ARUN PRO v8 MT5");
    gCountdownY=-1;
    EventSetTimer(1);
    return INIT_SUCCEEDED;
