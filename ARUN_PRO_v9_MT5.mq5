@@ -1,6 +1,10 @@
 //+------------------------------------------------------------------+
-//|                                                ARUN_PRO_v8.mq5   |
-//| Native MT5 ARUN Indicator Pro v8 - Confidence Engine.           |
+//|                                                ARUN_PRO_v9.mq5   |
+//| Native MT5 ARUN Indicator Pro v9 - Confidence Engine.           |
+//|                                                                 |
+//| New in v9: the fair value gap guard. See the block above         |
+//| FvgAt() for what it measures and why the gap's own direction     |
+//| decides which signal it warns about.                            |
 //| Signal logic is unchanged from v7. The panel differs: the three  |
 //| measured angles are printed and coloured individually, TARGET    |
 //| and POTENTIAL are gone, and a countdown to the candle close was  |
@@ -8,8 +12,8 @@
 //| can sit on the same chart without overwriting each other.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "8.00"
-#property description "ARUN PRO v8 - Native MT5 Confidence Engine"
+#property version   "9.00"
+#property description "ARUN PRO v9 - Native MT5 Confidence Engine"
 #property indicator_chart_window
 #property indicator_buffers 5
 #property indicator_plots   5
@@ -68,6 +72,26 @@ input ENUM_TIMEFRAMES InpMTF1           = PERIOD_M3;
 input ENUM_TIMEFRAMES InpMTF2           = PERIOD_M5;
 input ENUM_TIMEFRAMES InpMTF3           = PERIOD_M10;
 
+//=== Fair value gap guard ==========================================
+// A three candle imbalance: the middle candle travels far enough that
+// the outer two do not overlap, leaving a band price skipped over.
+// Price commonly returns to trade through that band before continuing.
+// So a cross that fires with an unfilled gap behind it tends to detour
+// first - which is the drawdown, not the trade going wrong.
+input bool     InpUseFvgGuard          = true;
+input int      InpFvgLookback          = 20;    // candles scanned for gaps
+input double   InpFvgMinAtr            = 0.20;  // ignore gaps narrower than this x ATR
+enum ENUM_FVG_FILL
+{
+   FVG_FILL_TOUCH = 0,   // any trade back into the band counts as filled
+   FVG_FILL_FULL  = 1    // the band must be covered end to end
+};
+input ENUM_FVG_FILL InpFvgFillMode     = FVG_FILL_TOUCH;
+input bool     InpDrawFvgBoxes         = true;  // shade the live gaps on the chart
+input color    InpFvgBullColor         = clrGold;
+input color    InpFvgBearColor         = clrPlum;
+input bool     InpFvgMutesAlert        = true;  // stay silent when a gap blocks the signal
+
 input bool     InpShowDashboard        = true;
 input int      InpDashX               = 330;
 input int      InpDashY               = 35;
@@ -92,7 +116,7 @@ int hMtfFast2 = INVALID_HANDLE, hMtfMid2 = INVALID_HANDLE, hMtfSlow2 = INVALID_H
 int hMtfFast3 = INVALID_HANDLE, hMtfMid3 = INVALID_HANDLE, hMtfSlow3 = INVALID_HANDLE;
 
 //--- Dashboard object prefix
-string PREFIX = "ARUNPRO8_";
+string PREFIX = "ARUNPRO9_";
 
 //--- Live panel origin. Starts at the inputs, then follows the title
 //--- label when it is dragged. X grows leftwards from the right edge.
@@ -292,7 +316,128 @@ bool GetMTFAlignment(datetime t,int &t1,int &t2,int &t3)
    return (t1==1 && t2==1 && t3==1) || (t1==-1 && t2==-1 && t3==-1);
 }
 
-void AlertSignal(bool buy,datetime barTime,double price)
+//+------------------------------------------------------------------+
+//| FAIR VALUE GAP                                                   |
+//|                                                                  |
+//| Three candles, the outer two not overlapping. Taking i as the     |
+//| newest of the triple:                                            |
+//|   bullish  low[i]  > high[i+2]   band = high[i+2] .. low[i]       |
+//|   bearish  high[i] < low[i+2]    band = high[i]   .. low[i+2]     |
+//|                                                                  |
+//| WHICH SIGNAL A GAP THREATENS                                     |
+//|   A bullish gap is left BELOW price, because price rose away from |
+//|   it. Filling it means falling. So an unfilled bullish gap is     |
+//|   what threatens a fresh BUY - not a SELL. A bearish gap sits     |
+//|   above and threatens a SELL. The gap's own direction is          |
+//|   therefore the direction of the signal it warns about, which is  |
+//|   why nothing here takes a separate "side" argument.              |
+//|                                                                  |
+//| A gap is filled once later bars trade into the band - the whole   |
+//| band under FVG_FILL_FULL, any part of it under FVG_FILL_TOUCH.    |
+//| Bar 0 counts: the guard has to reflect what price is doing now.   |
+//+------------------------------------------------------------------+
+bool FvgAt(int i,int dir,double atr,double &lo,double &hi)
+{
+   lo=0.0; hi=0.0;
+   if(atr<=0.0 || dir==0 || i<1) return false;
+
+   double hA=iHigh(_Symbol,PERIOD_CURRENT,i+2), lA=iLow(_Symbol,PERIOD_CURRENT,i+2);
+   double hC=iHigh(_Symbol,PERIOD_CURRENT,i),   lC=iLow(_Symbol,PERIOD_CURRENT,i);
+   if(hA<=0.0||lA<=0.0||hC<=0.0||lC<=0.0) return false;
+
+   if(dir>0) { if(lC<=hA) return false; lo=hA; hi=lC; }
+   else      { if(hC>=lA) return false; lo=hC; hi=lA; }
+
+   if(hi-lo < InpFvgMinAtr*atr) return false;
+
+   //--- what every bar since, the forming one included, did to the band
+   double mn=DBL_MAX, mx=-DBL_MAX;
+   for(int j=0;j<i;j++)
+   {
+      double l=iLow(_Symbol,PERIOD_CURRENT,j), h=iHigh(_Symbol,PERIOD_CURRENT,j);
+      if(l>0.0) mn=MathMin(mn,l);
+      if(h>0.0) mx=MathMax(mx,h);
+   }
+   bool filled;
+   if(dir>0) filled=(InpFvgFillMode==FVG_FILL_FULL) ? (mn<=lo) : (mn<hi);
+   else      filled=(InpFvgFillMode==FVG_FILL_FULL) ? (mx>=hi) : (mx>lo);
+   return !filled;
+}
+
+//--- Nearest unfilled gap of direction dir. dist is how far price has
+//--- to travel to reach the band, 0 if it is already inside it.
+bool NearestUnfilledFvg(int dir,double atr,double &dist,double &widthAtr,
+                        double &glo,double &ghi,int &ageBars)
+{
+   dist=0.0; widthAtr=0.0; glo=0.0; ghi=0.0; ageBars=0;
+   if(!InpUseFvgGuard) return false;
+
+   double px=iClose(_Symbol,PERIOD_CURRENT,0);
+   if(px<=0.0) return false;
+
+   int  n=MathMax(3,InpFvgLookback);
+   bool found=false;
+   double best=DBL_MAX, lo=0.0, hi=0.0;
+
+   for(int i=1;i<=n;i++)
+   {
+      if(!FvgAt(i,dir,atr,lo,hi)) continue;
+      double d=(dir>0) ? (px-hi) : (lo-px);
+      if(d<0.0) d=0.0;
+      if(d<best)
+      {
+         best=d; found=true;
+         dist=d; widthAtr=(atr>0.0 ? (hi-lo)/atr : 0.0);
+         glo=lo; ghi=hi; ageBars=i;
+      }
+   }
+   return found;
+}
+
+void DeleteFvgBoxes()
+{
+   int total=ObjectsTotal(0,-1,-1);
+   for(int i=total-1;i>=0;i--)
+   {
+      string n=ObjectName(0,i,-1,-1);
+      if(StringFind(n,PREFIX+"FVG_")==0) ObjectDelete(0,n);
+   }
+}
+
+//--- Redrawn from scratch each pass: a gap that has just been filled
+//--- must disappear, and tracking that incrementally is more state
+//--- than a dozen rectangles are worth.
+void DrawFvgBoxes(double atr)
+{
+   DeleteFvgBoxes();
+   if(!InpDrawFvgBoxes || !InpUseFvgGuard || atr<=0.0) return;
+
+   datetime tRight=iTime(_Symbol,PERIOD_CURRENT,0);
+   int n=MathMax(3,InpFvgLookback), drawn=0;
+
+   for(int i=1;i<=n && drawn<16;i++)
+      for(int d=1;d>=-1;d-=2)
+      {
+         double lo=0.0,hi=0.0;
+         if(!FvgAt(i,d,atr,lo,hi)) continue;
+         datetime tLeft=iTime(_Symbol,PERIOD_CURRENT,i+2);
+         if(tLeft==0) continue;
+         string nm=PREFIX+"FVG_"+IntegerToString(i)+"_"+IntegerToString(d);
+         if(ObjectFind(0,nm)<0) ObjectCreate(0,nm,OBJ_RECTANGLE,0,tLeft,lo,tRight,hi);
+         ObjectSetInteger(0,nm,OBJPROP_TIME,0,tLeft);
+         ObjectSetDouble (0,nm,OBJPROP_PRICE,0,lo);
+         ObjectSetInteger(0,nm,OBJPROP_TIME,1,tRight);
+         ObjectSetDouble (0,nm,OBJPROP_PRICE,1,hi);
+         ObjectSetInteger(0,nm,OBJPROP_COLOR,(d>0?InpFvgBullColor:InpFvgBearColor));
+         ObjectSetInteger(0,nm,OBJPROP_FILL,true);
+         ObjectSetInteger(0,nm,OBJPROP_BACK,true);
+         ObjectSetInteger(0,nm,OBJPROP_SELECTABLE,false);
+         ObjectSetInteger(0,nm,OBJPROP_HIDDEN,true);
+         drawn++;
+      }
+}
+
+void AlertSignal(bool buy,datetime barTime,double price,bool blocked)
 {
    string side=buy ? "BUY" : "SELL";
    if(buy && lastBuyAlertBar==barTime) return;
@@ -300,6 +445,12 @@ void AlertSignal(bool buy,datetime barTime,double price)
    if(buy) lastBuyAlertBar=barTime; else lastSellAlertBar=barTime;
 
    string msg="ARUN PRO "+side+" on "+_Symbol+" @ "+DoubleToString(price,_Digits);
+   if(blocked) msg+="  [FVG UNFILLED - do not trade]";
+
+   //--- a blocked signal is one you have decided not to take, so the
+   //--- default is to say nothing rather than train you to ignore it
+   if(blocked && InpFvgMutesAlert) return;
+
    if(InpEnablePopupAlert) Alert(msg);
    if(InpEnableSoundAlert) PlaySound(buy ? InpBuySound : InpSellSound);
    if(InpEnablePushAlert) SendNotification(msg);
@@ -453,8 +604,40 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    bool buySignal=(BuyBuffer[shift]!=EMPTY_VALUE);
    bool sellSignal=(SellBuffer[shift]!=EMPTY_VALUE);
 
+   //--- the guard. Both directions are evaluated every pass so the row
+   //--- is informative while waiting, not only once a signal fires.
+   double dB=0,wB=0,loB=0,hiB=0; int ageB=0;
+   double dS=0,wS=0,loS=0,hiS=0; int ageS=0;
+   bool fvgBuy  = NearestUnfilledFvg( 1,atr,dB,wB,loB,hiB,ageB);
+   bool fvgSell = NearestUnfilledFvg(-1,atr,dS,wS,loS,hiS,ageS);
+   bool blocked = (buySignal && fvgBuy) || (sellSignal && fvgSell);
+
+   string fvgText; color fvgColor;
+   if(!InpUseFvgGuard)          { fvgText="OFF";   fvgColor=clrGray;  }
+   else if(fvgBuy && fvgSell)
+   {
+      fvgText=StringFormat("BUY %s | SELL %s",
+                           DoubleToString(dB,_Digits),DoubleToString(dS,_Digits));
+      fvgColor=clrRed;
+   }
+   else if(fvgBuy)
+   {
+      fvgText=StringFormat("BLOCKS BUY %s (%.1fx)",DoubleToString(dB,_Digits),wB);
+      fvgColor=clrRed;
+   }
+   else if(fvgSell)
+   {
+      fvgText=StringFormat("BLOCKS SELL %s (%.1fx)",DoubleToString(dS,_Digits),wS);
+      fvgColor=clrRed;
+   }
+   else { fvgText="CLEAR"; fvgColor=clrGreen; }
+
+   //--- red only when it blocks the signal actually on the table
+   if(InpUseFvgGuard && (fvgBuy||fvgSell) && !blocked) fvgColor=clrOrange;
+
    string trend=bull?"BULLISH":bear?"BEARISH":"NEUTRAL";
    string setup=buySignal?"BUY":sellSignal?"SELL":"WAIT";
+   if(blocked) setup+="  x FVG";
    string mtfText=TFText(InpMTF1)+" "+(t1>0?"OK":"-")+"   "+
                   TFText(InpMTF2)+" "+(t2>0?"OK":"-")+"   "+
                   TFText(InpMTF3)+" "+(t3>0?"OK":"-");
@@ -466,11 +649,13 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
    // the box never lined up behind the text. Text straight on the chart.
    //--- the title doubles as the drag handle, so it is the one object
    //--- on the panel that is selectable
-   LabelCreate(PREFIX+"TITLE","ARUN PRO v8",gDashX+COL_KEY,gDashY+4,clrBlack,11,true,true);
+   LabelCreate(PREFIX+"TITLE","ARUN PRO v9",gDashX+COL_KEY,gDashY+4,clrBlack,11,true,true);
 
    int r=0;
    DashRow(r,"TREND",trend,bull?clrGreen:bear?clrRed:clrBlack,true);
-   DashRow(r,"SETUP",setup,buySignal?clrGreen:sellSignal?clrRed:clrBlack,true);
+   DashRow(r,"SETUP",setup,
+           blocked ? clrOrange : (buySignal?clrGreen:sellSignal?clrRed:clrBlack),true);
+   DashRow(r,"FVG",fvgText,fvgColor,true);
    DashRow(r,"MTF",mtfText,mtfAligned?clrGreen:clrRed,false);
    DashRow(r,"MTF STATUS",mtfStatus,mtfBull?clrGreen:mtfBear?clrRed:clrOrange,true);
    DashRow(r,"ANGLES",angleStatus,angleAligned?clrGreen:clrOrange,true);
@@ -561,7 +746,7 @@ int OnInit()
    ArraySetAsSeries(FastBuffer,true);ArraySetAsSeries(MidBuffer,true);ArraySetAsSeries(SlowBuffer,true);
    ArraySetAsSeries(BuyBuffer,true);ArraySetAsSeries(SellBuffer,true);
 
-   IndicatorSetString(INDICATOR_SHORTNAME,"ARUN PRO v8 MT5");
+   IndicatorSetString(INDICATOR_SHORTNAME,"ARUN PRO v9 MT5");
    gDashX=InpDashX; gDashY=InpDashY;
    gCountdownY=-1;
    EventSetTimer(1);
@@ -628,12 +813,27 @@ int OnCalculate(const int rates_total,const int prev_calculated,
    // Only the closed candle (shift 1) can generate a live alert.
    if(time[1]>=InpAnalysisStartDate)
    {
-      if(BuyBuffer[1]!=EMPTY_VALUE) AlertSignal(true,time[1],close[1]);
-      if(SellBuffer[1]!=EMPTY_VALUE) AlertSignal(false,time[1],close[1]);
+      double atrNow=0,an[1];
+      if(CopyBuffer(hATR,0,1,1,an)>0) atrNow=an[0];
+      if(atrNow<=0) atrNow=_Point;
+      double dd,ww,gl,gh; int ag;
+      if(BuyBuffer[1]!=EMPTY_VALUE)
+         AlertSignal(true,time[1],close[1],
+                     NearestUnfilledFvg(1,atrNow,dd,ww,gl,gh,ag));
+      if(SellBuffer[1]!=EMPTY_VALUE)
+         AlertSignal(false,time[1],close[1],
+                     NearestUnfilledFvg(-1,atrNow,dd,ww,gl,gh,ag));
    }
 
    if(InpShowDashboard) UpdateDashboard(0,time,high,low,open,close);
    else { DeleteDashboard(); gCountdownY=-1; }
+
+   //--- after the panel, because DeleteDashboard() clears everything
+   //--- carrying the prefix, the gap rectangles included
+   double atrBox=0,ab[1];
+   if(CopyBuffer(hATR,0,1,1,ab)>0) atrBox=ab[0];
+   if(atrBox<=0) atrBox=_Point;
+   DrawFvgBoxes(atrBox);
 
    ChartRedraw(0);
    return rates_total;

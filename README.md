@@ -41,12 +41,16 @@ select** — XAUUSD, EURUSD, USDJPY, BTCUSD, NAS100, WTI, an equity ticker, …
   converted to a price distance from the tick value and the lot size actually traded, so
   the +$2 / -$2 at 0.03 lots holds if the size changes. Because nothing manages the trade
   after entry, the CSV it writes measures the entry and only the entry.
-- **`ARUN_PRO_v8_MT5.mq5`** — the MT5 build of the ARUN Pro confidence engine. Same signal
-  logic as the Pine v7 indicator; the panel prints the three measured EMA angles coloured
-  individually (green above 90, red at or below), drops the target and potential rows, and
-  counts down to the candle close from a one-second timer so it keeps ticking on a quiet
-  chart. Its chart objects carry a version-specific prefix, so it can sit alongside the v7
-  build without the two overwriting each other's panel.
+- **`ARUN_PRO_v9_MT5.mq5`** — the MT5 build of the ARUN Pro confidence engine. Same cross
+  logic as the Pine v7 indicator. The panel prints the three measured EMA angles coloured
+  individually (green above 90, red at or below), counts down to the candle close from a
+  one-second timer so it keeps ticking on a quiet chart, and drags to wherever you want it.
+  v9 adds the **fair value gap guard**: it scans the last N candles for three-candle
+  imbalances that price has not yet traded back through, and warns when one sits behind a
+  fresh cross. A bullish gap is left below price, so filling it means falling - which is
+  what threatens a new BUY, not a SELL; the gap's own direction is therefore the direction
+  of the signal it warns about. Lookback, minimum width in ATR, and whether a touch or a
+  full cover counts as filled are all inputs. Live gaps are shaded on the chart.
 - **`ARUN_SIGNAL_PROBE_EA.mq5`** — the same entry signal as the MTF build, but it places
   no orders at all. At every signal it records where price went over eight horizons at
   once, with the best and worst excursion inside each, measured from the mid price. A
