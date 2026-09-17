@@ -81,6 +81,13 @@ input ENUM_TIMEFRAMES InpMTF3           = PERIOD_M10;
 input bool     InpUseFvgGuard          = true;
 input int      InpFvgLookback          = 20;    // candles scanned for gaps
 input double   InpFvgMinAtr            = 0.20;  // ignore gaps narrower than this x ATR
+// A gap far enough away cannot reach into a short trade, and without
+// this a single wide gap left behind blocks every signal indefinitely.
+// One ATR is the default because that is roughly how far these trades
+// actually run against themselves before resolving - measured average
+// adverse excursion was 2.18 against an M1 ATR of 2.09. A gap beyond
+// that is not what takes a thin stop out.
+input double   InpFvgMaxDistAtr        = 1.00;  // ignore gaps further than this x ATR. 0 = no limit
 enum ENUM_FVG_FILL
 {
    FVG_FILL_TOUCH = 0,   // any trade back into the band counts as filled
@@ -364,34 +371,55 @@ bool FvgAt(int i,int dir,double atr,double &lo,double &hi)
    return !filled;
 }
 
-//--- Nearest unfilled gap of direction dir. dist is how far price has
-//--- to travel to reach the band, 0 if it is already inside it.
-bool NearestUnfilledFvg(int dir,double atr,double &dist,double &widthAtr,
-                        double &glo,double &ghi,int &ageBars)
+//--- The nearest unfilled gap of direction dir.
+//---
+//--- dNear is how far price must travel to touch the band, dFar how far
+//--- to cover it end to end. The pair is the point: dNear says whether
+//--- the detour starts inside your stop, dFar whether the whole of it
+//--- fits. One number alone cannot answer that.
+struct FvgHit
 {
-   dist=0.0; widthAtr=0.0; glo=0.0; ghi=0.0; ageBars=0;
-   if(!InpUseFvgGuard) return false;
+   bool   found;
+   double dNear, dFar;
+   double widthAtr;
+   double lo, hi;
+   int    age;        // bars back to the newest candle of the triple
+};
+
+FvgHit NearestUnfilledFvg(int dir,double atr)
+{
+   FvgHit h;
+   h.found=false; h.dNear=0.0; h.dFar=0.0; h.widthAtr=0.0;
+   h.lo=0.0; h.hi=0.0; h.age=0;
+   if(!InpUseFvgGuard) return h;
 
    double px=iClose(_Symbol,PERIOD_CURRENT,0);
-   if(px<=0.0) return false;
+   if(px<=0.0) return h;
 
-   int  n=MathMax(3,InpFvgLookback);
-   bool found=false;
+   int    n=MathMax(3,InpFvgLookback);
    double best=DBL_MAX, lo=0.0, hi=0.0;
 
    for(int i=1;i<=n;i++)
    {
       if(!FvgAt(i,dir,atr,lo,hi)) continue;
-      double d=(dir>0) ? (px-hi) : (lo-px);
-      if(d<0.0) d=0.0;
-      if(d<best)
+
+      double dn=(dir>0) ? (px-hi) : (lo-px);
+      double df=(dir>0) ? (px-lo) : (hi-px);
+      if(dn<0.0) dn=0.0;
+      if(df<0.0) df=0.0;
+
+      //--- too far to reach into a trade of this length
+      if(InpFvgMaxDistAtr>0.0 && atr>0.0 && dn>InpFvgMaxDistAtr*atr) continue;
+
+      if(dn<best)
       {
-         best=d; found=true;
-         dist=d; widthAtr=(atr>0.0 ? (hi-lo)/atr : 0.0);
-         glo=lo; ghi=hi; ageBars=i;
+         best=dn;
+         h.found=true; h.dNear=dn; h.dFar=df;
+         h.widthAtr=(atr>0.0 ? (hi-lo)/atr : 0.0);
+         h.lo=lo; h.hi=hi; h.age=i;
       }
    }
-   return found;
+   return h;
 }
 
 void DeleteFvgBoxes()
@@ -606,34 +634,37 @@ void UpdateDashboard(int shift,const datetime &time[],const double &high[],const
 
    //--- the guard. Both directions are evaluated every pass so the row
    //--- is informative while waiting, not only once a signal fires.
-   double dB=0,wB=0,loB=0,hiB=0; int ageB=0;
-   double dS=0,wS=0,loS=0,hiS=0; int ageS=0;
-   bool fvgBuy  = NearestUnfilledFvg( 1,atr,dB,wB,loB,hiB,ageB);
-   bool fvgSell = NearestUnfilledFvg(-1,atr,dS,wS,loS,hiS,ageS);
-   bool blocked = (buySignal && fvgBuy) || (sellSignal && fvgSell);
+   FvgHit gb = NearestUnfilledFvg( 1,atr);
+   FvgHit gs = NearestUnfilledFvg(-1,atr);
+   bool blocked = (buySignal && gb.found) || (sellSignal && gs.found);
 
    string fvgText; color fvgColor;
-   if(!InpUseFvgGuard)          { fvgText="OFF";   fvgColor=clrGray;  }
-   else if(fvgBuy && fvgSell)
+   if(!InpUseFvgGuard) { fvgText="OFF"; fvgColor=clrGray; }
+   else if(gb.found && gs.found)
    {
-      fvgText=StringFormat("BUY %s | SELL %s",
-                           DoubleToString(dB,_Digits),DoubleToString(dS,_Digits));
+      fvgText=StringFormat("BOTH  B %s  S %s",
+                           DoubleToString(gb.dFar,_Digits),DoubleToString(gs.dFar,_Digits));
       fvgColor=clrRed;
    }
-   else if(fvgBuy)
+   else if(gb.found)
    {
-      fvgText=StringFormat("BLOCKS BUY %s (%.1fx)",DoubleToString(dB,_Digits),wB);
+      //--- the pull is down: the dip runs from dNear to dFar
+      fvgText=StringFormat("BLOCKS BUY  %s-%s  %db",
+                           DoubleToString(gb.dNear,_Digits),
+                           DoubleToString(gb.dFar,_Digits), gb.age);
       fvgColor=clrRed;
    }
-   else if(fvgSell)
+   else if(gs.found)
    {
-      fvgText=StringFormat("BLOCKS SELL %s (%.1fx)",DoubleToString(dS,_Digits),wS);
+      fvgText=StringFormat("BLOCKS SELL  %s-%s  %db",
+                           DoubleToString(gs.dNear,_Digits),
+                           DoubleToString(gs.dFar,_Digits), gs.age);
       fvgColor=clrRed;
    }
    else { fvgText="CLEAR"; fvgColor=clrGreen; }
 
    //--- red only when it blocks the signal actually on the table
-   if(InpUseFvgGuard && (fvgBuy||fvgSell) && !blocked) fvgColor=clrOrange;
+   if(InpUseFvgGuard && (gb.found||gs.found) && !blocked) fvgColor=clrOrange;
 
    string trend=bull?"BULLISH":bear?"BEARISH":"NEUTRAL";
    string setup=buySignal?"BUY":sellSignal?"SELL":"WAIT";
@@ -816,13 +847,16 @@ int OnCalculate(const int rates_total,const int prev_calculated,
       double atrNow=0,an[1];
       if(CopyBuffer(hATR,0,1,1,an)>0) atrNow=an[0];
       if(atrNow<=0) atrNow=_Point;
-      double dd,ww,gl,gh; int ag;
       if(BuyBuffer[1]!=EMPTY_VALUE)
-         AlertSignal(true,time[1],close[1],
-                     NearestUnfilledFvg(1,atrNow,dd,ww,gl,gh,ag));
+      {
+         FvgHit g=NearestUnfilledFvg(1,atrNow);
+         AlertSignal(true,time[1],close[1],g.found);
+      }
       if(SellBuffer[1]!=EMPTY_VALUE)
-         AlertSignal(false,time[1],close[1],
-                     NearestUnfilledFvg(-1,atrNow,dd,ww,gl,gh,ag));
+      {
+         FvgHit g=NearestUnfilledFvg(-1,atrNow);
+         AlertSignal(false,time[1],close[1],g.found);
+      }
    }
 
    if(InpShowDashboard) UpdateDashboard(0,time,high,low,open,close);
