@@ -97,7 +97,10 @@ input ENUM_FVG_FILL InpFvgFillMode     = FVG_FILL_TOUCH;
 input bool     InpDrawFvgBoxes         = true;  // shade the live gaps on the chart
 input color    InpFvgBullColor         = clrGold;
 input color    InpFvgBearColor         = clrPlum;
-input bool     InpFvgMutesAlert        = true;  // stay silent when a gap blocks the signal
+// Off by default: the guard informs, it does not decide. Silencing the
+// alert would hide the signal entirely, and the whole point is to be
+// told about both the cross and the gap and then choose.
+input bool     InpFvgMutesAlert        = false; // stay silent when a gap blocks the signal
 
 input bool     InpShowDashboard        = true;
 input int      InpDashX               = 330;
@@ -475,8 +478,8 @@ void AlertSignal(bool buy,datetime barTime,double price,bool blocked)
    string msg="ARUN PRO "+side+" on "+_Symbol+" @ "+DoubleToString(price,_Digits);
    if(blocked) msg+="  [FVG UNFILLED - do not trade]";
 
-   //--- a blocked signal is one you have decided not to take, so the
-   //--- default is to say nothing rather than train you to ignore it
+   //--- by default the alert still fires, carrying the warning: the
+   //--- decision to wait for the gap to be covered is the trader's
    if(blocked && InpFvgMutesAlert) return;
 
    if(InpEnablePopupAlert) Alert(msg);
